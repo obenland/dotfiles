@@ -6,6 +6,7 @@
   },
   "permissions": {
     "allow": [
+      "Read",
       "Bash(docker system*)",
       "Bash(du*)",
       "Bash(npm run start*)",
@@ -29,8 +30,11 @@
       "Bash(git pull*)",
       "Bash(git blame*)",
       "Bash(git cherry-pick*)",
+      "Bash(git commit*)",
       "Bash(gh issue view*)",
       "Bash(gh pr view*)",
+      "Bash(gh pr create*)",
+      "Bash(gh pr edit*)",
       "Bash(gh api*)",
       "Bash(jetpack*)",
       "Bash(ls*)",
@@ -48,9 +52,20 @@
       "mcp__context-a8c__context-a8c-load-provider",
       "mcp__context-a8c__context-a8c-execute-tool"
     ],
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.netrc)",
+      "Read(~/.npmrc)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.zsh_history)",
+      "Read(~/.bash_history)",
+      "Read(~/.config/gh/**)",
+      "Read(~/Library/**)"
+    ],
     "ask": [
-      "Bash(rm*)",
-      "Bash(git commit*)"
+      "Bash(rm*)"
     ]
   },
   "hooks": {
