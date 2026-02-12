@@ -50,7 +50,9 @@
       "mcp__chrome-devtools__list_pages",
       "mcp__chrome-devtools__navigate_page",
       "mcp__context-a8c__context-a8c-load-provider",
-      "mcp__context-a8c__context-a8c-execute-tool"
+      "mcp__context-a8c__context-a8c-execute-tool",
+      "Bash(gh repo:*)",
+      "Bash(gh label:*)"
     ],
     "deny": [
       "Read(~/.ssh/**)",
@@ -89,8 +91,14 @@
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
+  "includeCoAuthoredBy": false,
   "teammateMode": "tmux",
   "defaultMode": "acceptEdits",
+  "statusLine": {
+    "type": "command",
+    "command": "basename \"$PWD\"",
+    "padding": 0
+  },
   "skills": {
     "allowedSkills": [
       "commit",

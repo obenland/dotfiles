@@ -15,3 +15,15 @@
 	excludesfile = /Users/obenland/.gitignore_global
 [init]
 	defaultBranch = trunk
+[fetch]
+	prune = true
+[rebase]
+	autoStash = true
+[merge]
+	conflictstyle = zdiff3
+[diff]
+	algorithm = histogram
+[push]
+	autoSetupRemote = true
+[rerere]
+	enabled = true
