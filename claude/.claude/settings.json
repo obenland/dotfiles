@@ -71,6 +71,10 @@
     "superpowers@claude-plugins-official": true,
     "pr-review-toolkit@claude-plugins-official": true
   },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "teammateMode": "tmux",
   "defaultMode": "acceptEdits",
   "skills": {
     "allowedSkills": [
