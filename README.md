@@ -9,7 +9,7 @@ Personal configuration managed with [GNU Stow](https://www.gnu.org/software/stow
 brew install stow
 
 # Clone this repo
-git clone <repo-url> ~/dotfiles
+git clone git@github.com:obenland/dotfiles.git ~/dotfiles
 
 # Install all packages
 cd ~/dotfiles
