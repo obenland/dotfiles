@@ -1,0 +1,17 @@
+[filter "lfs"]
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true
+[user]
+	name = Konstantin Obenland
+	email = obenland@gmx.de
+	signingkey = 2C1724E70AF10A28
+[commit]
+	gpgsign = true
+[gpg]
+	program = gpg2
+[core]
+	excludesfile = /Users/obenland/.gitignore_global
+[init]
+	defaultBranch = trunk

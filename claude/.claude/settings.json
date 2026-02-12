@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "permissions": {
+    "allow": [
+      "Bash(docker system*)",
+      "Bash(du*)",
+      "Bash(npm run start*)",
+      "Bash(npm run test:js*)",
+      "Bash(npm run lint*)",
+      "Bash(npm run lint:js*)",
+      "Bash(npm test)",
+      "Bash(composer install*)",
+      "Bash(composer update*)",
+      "Bash(composer dump-autoload*)",
+      "Bash(composer list*)",
+      "Bash(composer show*)",
+      "Bash(npx tsc*)",
+      "Bash(git log*)",
+      "Bash(git checkout*)",
+      "Bash(git add*)",
+      "Bash(git branch*)",
+      "Bash(git push*)",
+      "Bash(git fetch*)",
+      "Bash(git rebase*)",
+      "Bash(git pull*)",
+      "Bash(git blame*)",
+      "Bash(git cherry-pick*)",
+      "Bash(gh issue view*)",
+      "Bash(gh pr view*)",
+      "Bash(gh api*)",
+      "Bash(jetpack*)",
+      "Bash(ls*)",
+      "Bash(find*)",
+      "Bash(grep*)",
+      "Bash(tmux *)",
+      "Bash(git worktree *)",
+      "Bash(claude -p *)",
+      "WebSearch",
+      "WebFetch(domain:developer.chrome.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:developer.wordpress.org)",
+      "mcp__chrome-devtools__list_pages",
+      "mcp__chrome-devtools__navigate_page",
+      "mcp__context-a8c__context-a8c-load-provider",
+      "mcp__context-a8c__context-a8c-execute-tool"
+    ],
+    "ask": [
+      "Bash(rm*)",
+      "Bash(git commit*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/pre-commit-review.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "pr-review-toolkit@claude-plugins-official": true
+  },
+  "defaultMode": "acceptEdits",
+  "skills": {
+    "allowedSkills": [
+      "commit",
+      "sup",
+      "wrap",
+      "review",
+      "team",
+      "learn"
+    ]
+  }
+}
