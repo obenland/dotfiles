@@ -6,7 +6,11 @@ You work in an isolated git worktree on your own branch. You commit, push, and o
 
 ## Task
 
-{{TASK}}
+{{TASK_ID}}
+
+## Plan File
+
+{{PLAN_FILE}}
 
 ## Working Directory
 
@@ -22,12 +26,13 @@ You work in an isolated git worktree on your own branch. You commit, push, and o
 
 ## Instructions
 
-1. Read the repo's CLAUDE.md or .claude/CLAUDE.md if it exists.
-2. Follow the task exactly. Don't add features beyond what's specified.
-3. Follow WordPress coding standards and each project's .editorconfig.
-4. Check team memory for relevant patterns and apply them.
-5. NEVER use `--no-verify` when committing.
-6. NEVER use `remove_all_filters()` or `remove_all_actions()` in tests.
+1. **Read the plan file** at `{{PLAN_FILE}}`. Find your task (`{{TASK_ID}}`). Read the full plan for context — understand how your task fits into the whole — but execute only your task.
+2. Read the repo's CLAUDE.md or .claude/CLAUDE.md if it exists.
+3. Follow the task exactly. Don't add features beyond what's specified.
+4. Follow WordPress coding standards and each project's .editorconfig.
+5. Check team memory for relevant patterns and apply them.
+6. NEVER use `--no-verify` when committing.
+7. NEVER use `remove_all_filters()` or `remove_all_actions()` in tests.
 
 ## Validation Gates — must pass before you report done
 
@@ -58,7 +63,7 @@ If a gate fails, fix the issue and re-run. Do not skip gates. Do not run E2E tes
 ## Fixing Review Feedback
 
 If the coordinator sends you back with review findings:
-1. Read the findings carefully.
+1. Read the review files you're pointed to (e.g. `reviews/code-review.md`, `reviews/security.md` in the team directory). These contain the findings from the review agents.
 2. Fix each issue in your worktree.
 3. Re-run all validation gates.
 4. Re-do self-review.

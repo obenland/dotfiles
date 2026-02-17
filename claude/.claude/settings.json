@@ -1,14 +1,19 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
   "attribution": {
     "commit": "",
     "pr": ""
   },
+  "includeCoAuthoredBy": false,
   "permissions": {
     "allow": [
       "Read",
       "Bash(docker system*)",
-      "Bash(du*)",
+      "Bash(du:*)",
+      "Bash(brew:*)",
       "Bash(npm run start*)",
       "Bash(npm run test:js*)",
       "Bash(npm run lint*)",
@@ -37,7 +42,7 @@
       "Bash(gh pr edit*)",
       "Bash(gh api*)",
       "Bash(jetpack*)",
-      "Bash(ls*)",
+      "Bash(ls:*)",
       "Bash(find*)",
       "Bash(grep*)",
       "Bash(tmux *)",
@@ -47,6 +52,7 @@
       "WebFetch(domain:developer.chrome.com)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:developer.wordpress.org)",
+      "WebFetch(domain:raw.githubusercontent.com)",
       "mcp__chrome-devtools__list_pages",
       "mcp__chrome-devtools__navigate_page",
       "mcp__context-a8c__context-a8c-load-provider",
@@ -63,11 +69,11 @@
       "Read(~/.docker/config.json)",
       "Read(~/.zsh_history)",
       "Read(~/.bash_history)",
-      "Read(~/.config/gh/**)",
       "Read(~/Library/**)"
     ],
     "ask": [
-      "Bash(rm*)"
+      "Bash(rm*)",
+      "Bash(svn ci:*)"
     ]
   },
   "hooks": {
@@ -84,21 +90,17 @@
       }
     ]
   },
-  "enabledPlugins": {
-    "superpowers@claude-plugins-official": true,
-    "pr-review-toolkit@claude-plugins-official": true
-  },
-  "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
-  },
-  "includeCoAuthoredBy": false,
-  "teammateMode": "tmux",
-  "defaultMode": "acceptEdits",
   "statusLine": {
     "type": "command",
     "command": "basename \"$PWD\"",
     "padding": 0
   },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "pr-review-toolkit@claude-plugins-official": true
+  },
+  "teammateMode": "tmux",
+  "defaultMode": "bypassPermissions",
   "skills": {
     "allowedSkills": [
       "commit",
@@ -108,5 +110,6 @@
       "team",
       "learn"
     ]
-  }
+  },
+  "skipDangerousModePermissionPrompt": true
 }
