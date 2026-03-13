@@ -3,11 +3,6 @@
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
-  "attribution": {
-    "commit": "",
-    "pr": ""
-  },
-  "includeCoAuthoredBy": false,
   "permissions": {
     "allow": [
       "Bash(brew *)",
@@ -87,15 +82,15 @@
       "mcp__context-a8c"
     ],
     "deny": [
-      "Read(~/.ssh/**)",
-      "Read(~/.aws/**)",
-      "Read(~/.gnupg/**)",
-      "Read(~/.netrc)",
-      "Read(~/.npmrc)",
-      "Read(~/.docker/config.json)",
-      "Read(~/.zsh_history)",
-      "Read(~/.bash_history)",
-      "Read(~/Library/**)"
+      "Read(*~/.ssh/**)",
+      "Read(*~/.aws/**)",
+      "Read(*~/.gnupg/**)",
+      "Read(*~/.netrc)",
+      "Read(*~/.npmrc)",
+      "Read(*~/.docker/config.json)",
+      "Read(*~/.zsh_history)",
+      "Read(*~/.bash_history)",
+      "Read(*~/Library/**)"
     ],
     "ask": [
       "Bash(rm *)",

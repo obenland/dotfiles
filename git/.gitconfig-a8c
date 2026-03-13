@@ -1,0 +1,10 @@
+[user]
+	name = Konstantin Obenland
+	email = obenland@automattic.com
+	signingkey = ~/.ssh/autoproxxy.pub
+[commit]
+	gpgsign = true
+[gpg]
+	format = ssh
+[gpg "ssh"]
+	program = /Applications/AutoProxxy.app/Contents/Resources/ssh_keygen_wrapper.sh
