@@ -13,6 +13,7 @@ git clone git@github.com:obenland/dotfiles.git ~/dotfiles
 
 # Install all packages
 cd ~/dotfiles
+git config core.hooksPath .githooks
 stow claude git zsh vim
 
 # Or install selectively
