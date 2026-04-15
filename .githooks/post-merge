@@ -1,0 +1,8 @@
+#!/bin/bash
+# Restow every package after a successful merge (including git pull).
+# Picks up new files added upstream without touching existing symlinks.
+# Packages are auto-discovered: every non-hidden top-level directory.
+set -e
+cd "$(git rev-parse --show-toplevel)"
+packages=(*/)
+stow -R "${packages[@]%/}"
