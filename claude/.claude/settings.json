@@ -106,6 +106,22 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/pre-commit-review.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/svn-guard.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/notify.sh"
           }
         ]
       }
@@ -118,8 +134,25 @@
   },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true,
-    "pr-review-toolkit@claude-plugins-official": true
+    "pr-review-toolkit@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true,
+    "skill-creator@claude-plugins-official": true,
+    "unit-tests@automattic-claude-code-plugins": true
   },
+  "extraKnownMarketplaces": {
+    "anthropic-agent-skills": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/skills"
+      }
+    }
+  },
+  "effortLevel": "medium",
+  "autoDreamEnabled": true,
+  "skipDangerousModePermissionPrompt": true,
+  "additionalDirectories": [
+    "/tmp"
+  ],
   "teammateMode": "tmux",
   "defaultMode": "bypassPermissions",
   "skills": {
@@ -131,6 +164,5 @@
       "team",
       "learn"
     ]
-  },
-  "skipDangerousModePermissionPrompt": true
+  }
 }

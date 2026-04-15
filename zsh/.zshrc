@@ -18,3 +18,19 @@ alias sync-wpcom='unison -ui text -repeat watch automattic-sandbox'
 alias sync-woa="unison -ui text -repeat watch woa"
 
 function h() { sudo vim /etc/hosts; kill $(ps -Ao pid,command | awk '/obenland@proxy\.automattic\.com/ { print $1 }'); }
+
+function svn() {
+	if [[ "$1" == "diff" ]]; then
+		command svn "$@" | colordiff
+	else
+		command svn "$@"
+	fi
+}
+
+# pnpm
+export PNPM_HOME="~/Library/pnpm"
+case ":$PATH:" in
+  *":$PNPM_HOME:"*) ;;
+  *) export PATH="$PNPM_HOME:$PATH" ;;
+esac
+# pnpm end

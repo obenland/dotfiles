@@ -2,6 +2,10 @@ Be direct. Move forward. Don't over-explain.
 Bias toward action — ask only when the decision is genuinely ambiguous.
 Review ~/.claude/settings.json for global settings.
 
+## Version Control
+
+- Some projects use SVN, not git. Check for `.svn/` before using git commands. Use `svn` equivalents in SVN repos (a PreToolUse hook enforces this too).
+
 ## Git Commits
 
 - NEVER use `--no-verify` when committing. Always fix linting/hook issues first.
