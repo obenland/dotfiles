@@ -17,6 +17,10 @@ Review ~/.claude/settings.json for global settings.
 ## Standards
 
 - WordPress coding standards. Follow each project's `.editorconfig`.
+- Comment style (PHP + JS, including tests):
+  - `/** */` docblocks on every function, method, class, property, constant, and file header — with aligned `@param`/`@return`/`@since`/`@access` tags as appropriate.
+  - `/* */` (single asterisk, ` * ` continuations) for multi-line comments inside a function body.
+  - `//` only for single-line comments. Never stack two or more `//` lines — if you need more than one line, use `/* */`.
 - Don't refactor code you weren't asked to touch.
 - Don't add features beyond what's asked.
 - Don't add unnecessary abstractions, type annotations, or docstrings to unchanged code.

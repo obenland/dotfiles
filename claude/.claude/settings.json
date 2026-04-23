@@ -77,10 +77,12 @@
       "Bash(npx tsc *)",
       "Bash(phpcs *)",
       "Bash(tmux *)",
+      "Bash(wc *)",
       "Bash(which *)",
       "Read",
       "WebFetch(domain:developer.chrome.com)",
       "WebFetch(domain:developer.wordpress.org)",
+      "WebFetch(domain:make.wordpress.org)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebSearch",
@@ -101,7 +103,8 @@
     "ask": [
       "Bash(rm *)",
       "Bash(svn ci *)"
-    ]
+    ],
+    "defaultMode": "auto"
   },
   "hooks": {
     "PreToolUse": [
@@ -153,9 +156,10 @@
       }
     }
   },
-  "effortLevel": "medium",
+  "effortLevel": "high",
   "autoDreamEnabled": true,
   "skipDangerousModePermissionPrompt": true,
+  "skipAutoPermissionPrompt": true,
   "additionalDirectories": [
     "/tmp"
   ],
