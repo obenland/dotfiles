@@ -44,6 +44,7 @@
       "Bash(git -C * pull *)",
       "Bash(git -C * push *)",
       "Bash(git -C * rebase *)",
+      "Bash(git -C * stash *)",
       "Bash(git -C * status *)",
       "Bash(git -C * worktree *)",
       "Bash(git add *)",
@@ -62,6 +63,7 @@
       "Bash(git pull *)",
       "Bash(git push *)",
       "Bash(git rebase *)",
+      "Bash(git stash *)",
       "Bash(git status *)",
       "Bash(git worktree *)",
       "Bash(grep *)",
@@ -76,6 +78,7 @@
       "Bash(npm test)",
       "Bash(npx tsc *)",
       "Bash(phpcs *)",
+      "Bash(tail:*)",
       "Bash(tmux *)",
       "Bash(wc *)",
       "Bash(which *)",
@@ -106,6 +109,7 @@
     ],
     "defaultMode": "auto"
   },
+  "model": "opus[1m]",
   "hooks": {
     "PreToolUse": [
       {
@@ -159,11 +163,11 @@
   "effortLevel": "high",
   "autoDreamEnabled": true,
   "skipDangerousModePermissionPrompt": true,
+  "teammateMode": "tmux",
   "skipAutoPermissionPrompt": true,
   "additionalDirectories": [
     "/tmp"
   ],
-  "teammateMode": "tmux",
   "defaultMode": "bypassPermissions",
   "skills": {
     "allowedSkills": [
@@ -174,5 +178,8 @@
       "team",
       "learn"
     ]
-  }
+  },
+  "theme": "dark-daltonized",
+  "remoteControlAtStartup": true,
+  "agentPushNotifEnabled": true
 }

@@ -1,0 +1,8 @@
+{
+  "name": "wp-security-review",
+  "version": "1.0.0",
+  "description": "Comprehensive WordPress security auditor detecting XSS, SQLi, CSRF, SSRF, LFI, Object Injection, Command Injection, Auth Bypass, and more. Uses parallel subagents for efficient analysis and integrates wp-block-security for specialized Gutenberg block XSS detection.",
+  "author": {
+    "name": "Automattic"
+  }
+}

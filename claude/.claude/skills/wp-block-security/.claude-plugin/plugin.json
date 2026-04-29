@@ -1,0 +1,8 @@
+{
+  "name": "wp-block-security",
+  "version": "1.0.0",
+  "description": "Detects stored XSS vulnerabilities in WordPress block render_callback functions by tracing $attributes data flow into HTML output.",
+  "author": {
+    "name": "Automattic"
+  }
+}
