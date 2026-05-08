@@ -150,7 +150,8 @@
     "pr-review-toolkit@claude-plugins-official": true,
     "claude-md-management@claude-plugins-official": true,
     "skill-creator@claude-plugins-official": true,
-    "unit-tests@automattic-claude-code-plugins": true
+    "unit-tests@automattic-claude-code-plugins": true,
+    "e2e-tests@automattic-claude-code-plugins": true
   },
   "extraKnownMarketplaces": {
     "anthropic-agent-skills": {
@@ -163,7 +164,10 @@
   "effortLevel": "high",
   "autoDreamEnabled": true,
   "skipDangerousModePermissionPrompt": true,
+  "theme": "dark-daltonized",
   "teammateMode": "tmux",
+  "remoteControlAtStartup": true,
+  "agentPushNotifEnabled": true,
   "skipAutoPermissionPrompt": true,
   "additionalDirectories": [
     "/tmp"
@@ -178,8 +182,5 @@
       "team",
       "learn"
     ]
-  },
-  "theme": "dark-daltonized",
-  "remoteControlAtStartup": true,
-  "agentPushNotifEnabled": true
+  }
 }
