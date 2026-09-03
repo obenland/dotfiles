@@ -17,6 +17,7 @@ Review ~/.claude/settings.json for global settings.
 ## Standards
 
 - WordPress coding standards. Follow each project's `.editorconfig`.
+- New PHP files (including tests) must pass `phpcs` against the WordPress standard with zero errors *and* zero warnings, and must declare `declare( strict_types = 1 );` after the file docblock. Give everything they define explicit parameter and return types. Don't retrofit either onto pre-existing files.
 - Comment style (PHP + JS, including tests):
   - `/** */` docblocks on every function, method, class, property, constant, and file header — with aligned `@param`/`@return`/`@since`/`@access` tags as appropriate.
   - `/* */` (single asterisk, ` * ` continuations) for multi-line comments inside a function body.

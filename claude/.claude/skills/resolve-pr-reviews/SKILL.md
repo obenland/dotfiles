@@ -143,14 +143,14 @@ git push
 
 ## Step 5: Reply to each comment
 
-All review comments on PRs are "pull request review comments" — use the review comment reply endpoint.
+All review comments on PRs are "pull request review comments" — use the review comment reply endpoint. **The reply path must include the pull number** (`pulls/{pull_number}/comments/{comment_id}/replies`); the shorter `pulls/comments/{comment_id}/replies` form returns `404 Not Found`.
 
 ### Valid comments (fix applied)
 
 Reply on the review thread confirming the fix. Be specific about what was changed:
 
 ```bash
-gh api repos/{owner}/{repo}/pulls/comments/{comment_id}/replies \
+gh api repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies \
   -f body="Fixed — <brief description of what was applied>."
 ```
 
@@ -171,7 +171,7 @@ mutation($threadId: ID!) {
 Reply explaining why the suggestion wasn't applied. Be respectful but direct — give a clear technical reason:
 
 ```bash
-gh api repos/{owner}/{repo}/pulls/comments/{comment_id}/replies \
+gh api repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies \
   -f body="Not applied — <specific reason: e.g., 'this follows the project's existing convention of using X per .editorconfig', 'this would change the method signature which is part of the public API'>."
 ```
 

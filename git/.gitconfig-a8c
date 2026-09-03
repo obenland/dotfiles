@@ -8,3 +8,4 @@
 	format = ssh
 [gpg "ssh"]
 	program = /Applications/AutoProxxy.app/Contents/Resources/ssh_keygen_wrapper.sh
+	allowedSignersFile = ~/.config/git/allowed_signers

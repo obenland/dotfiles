@@ -1,5 +1,3 @@
-[includeIf "hasconfig:remote.*.url:git@github.a8c.com:*/**"]
-	path = ~/.gitconfig-a8c
 [filter "lfs"]
 	clean = git-lfs clean -- %f
 	smudge = git-lfs smudge -- %f
@@ -31,3 +29,8 @@
 	enabled = true
 [url "git@github.com:"]
 	insteadOf = https://github.com/
+# a8c repos: use the Automattic identity + SSH commit signing (autoproxxy).
+# Kept LAST so its email/signingkey win over the [user] block above in
+# a8c repos; elsewhere this include never fires and the GPG key stands.
+[includeIf "hasconfig:remote.*.url:git@github.a8c.com:*/**"]
+	path = ~/.gitconfig-a8c
