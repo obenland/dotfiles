@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<ruleset name="WritingTestsSkill">
+	<description>Coding standard for the writing-tests skill's own PHP.</description>
+
+	<file>scripts</file>
+	<file>standards</file>
+	<arg name="extensions" value="php"/>
+	<arg value="s"/>
+
+	<rule ref="WordPress"/>
+
+	<!-- PHPCS requires sniff and sniff-test files to be named after their class (FooSniff.php, FooUnitTest.php). -->
+	<rule ref="WordPress.Files.FileName">
+		<exclude-pattern>/standards/*</exclude-pattern>
+	</rule>
+
+	<!-- PHPCS's API exposes camelCase properties ($config->warningSeverity, $phpcs_file->numTokens). -->
+	<rule ref="WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase">
+		<exclude-pattern>/standards/*</exclude-pattern>
+	</rule>
+</ruleset>

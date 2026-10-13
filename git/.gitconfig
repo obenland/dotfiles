@@ -34,3 +34,5 @@
 # a8c repos; elsewhere this include never fires and the GPG key stands.
 [includeIf "hasconfig:remote.*.url:git@github.a8c.com:*/**"]
 	path = ~/.gitconfig-a8c
+[includeIf "hasconfig:remote.*.url:https://github.a8c.com/**"]
+	path = ~/.gitconfig-a8c

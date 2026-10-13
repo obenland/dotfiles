@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<ruleset name="TestValue">
+	<description>Agent-only checks for low-value PHPUnit tests. Not meant for CI lint.</description>
+	<autoload>./AbstractTestValueSniff.php</autoload>
+</ruleset>
