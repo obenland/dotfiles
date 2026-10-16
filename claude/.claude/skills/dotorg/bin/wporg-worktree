@@ -92,6 +92,11 @@ cmd_rm() {
 	fi
 	rm -f "$path/vendor" "$path/environments/node_modules"
 	git -C "$WPORG_REPO" worktree remove ${force:+--force} "$path"
+	# wporg-test keeps a detached <path>-merge sibling for testing the branch merged into trunk.
+	if [[ -d $path-merge ]]; then
+		rm -f "$path-merge/vendor" "$path-merge/environments/node_modules"
+		git -C "$WPORG_REPO" worktree remove --force "$path-merge"
+	fi
 
 	local state
 	state=$(pr_state "$branch")
