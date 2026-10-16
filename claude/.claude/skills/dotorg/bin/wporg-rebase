@@ -272,7 +272,7 @@ fi
 new_head=$(git -C "$path" rev-parse HEAD)
 {
 	echo "range-diff ${head:0:10} -> ${new_head:0:10}:"
-	git -C "$path" range-diff "origin/trunk...$head" "origin/trunk...HEAD" 2>/dev/null | head -60
+	git -C "$path" range-diff "$base_before..$head" "origin/trunk..HEAD" 2>/dev/null | head -60
 } >&2
 ok "Rebased: $commits_before -> $commits_after commits, ${head:0:10} -> ${new_head:0:10}, $stops stop(s)"
 event rebase ok "$pr" "${head:0:10} -> ${new_head:0:10}, $commits_after commits, conflicts: $(tr '\n' ' ' <<< "$all_conflicted")"
