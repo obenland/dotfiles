@@ -93,7 +93,7 @@ session_set() {
 # for rounds after the first; prints its result and records the session id under <role>.
 headless() {
 	local cwd=$1 role=$2 prompt=$3 extra=${4:-} out resume
-	local -a args=(-p --output-format json --effort "$effort" --settings "$(deny_settings)")
+	local -a args=(-p --output-format json --model "$WPORG_MODEL" --effort "$effort" --settings "$(deny_settings)")
 	resume=$(session_get "$role")
 	if [[ $round -gt 1 && -n $resume ]]; then
 		args+=(--resume "$resume")

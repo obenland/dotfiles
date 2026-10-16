@@ -4,6 +4,8 @@
 WPORG_REPO="${WPORG_REPO:-$HOME/Documents/code/wordpress.org}"
 WPORG_GH_REPO="${WPORG_GH_REPO:-WordPress/wordpress.org}"
 WPORG_EVENT_LOG="${WPORG_EVENT_LOG:-$HOME/.cache/wporg-pipeline/events.jsonl}"
+# The headless sessions' model, pinned so the pipeline does not follow whatever /model last saved.
+WPORG_MODEL="${WPORG_MODEL:-claude-opus-5-5}"
 
 if [[ -t 2 ]]; then
 	_BOLD=$'\e[1m'; _RED=$'\e[31m'; _GREEN=$'\e[32m'; _YELLOW=$'\e[33m'; _RESET=$'\e[0m'

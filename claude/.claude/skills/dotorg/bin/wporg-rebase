@@ -217,7 +217,7 @@ while [[ -d $gitdir/rebase-merge || -d $gitdir/rebase-apply ]]; do
 	settings=$(session_settings "$conflicted") || settings=""
 	[[ -n $settings ]] && jq -e '.permissions.allow | length > 3' <<< "$settings" >/dev/null 2>&1 || fail "session settings" "Could not build the session's permission settings."
 	dbg "before session"
-	out=$(cd "$path" && claude -p --output-format json --effort medium --permission-mode default --settings "$settings" --append-system-prompt "$policy" "$prompt" < /dev/null) || true
+	out=$(cd "$path" && claude -p --output-format json --model "$WPORG_MODEL" --effort medium --permission-mode default --settings "$settings" --append-system-prompt "$policy" "$prompt" < /dev/null) || true
 	dbg "after session"
 	# jq's // treats false as missing, so test the flag explicitly; no JSON at all also counts as failure.
 	if [[ $(jq -r 'if .is_error == true then "true" else "false" end' <<< "$out" 2>/dev/null || echo true) == "true" ]]; then
