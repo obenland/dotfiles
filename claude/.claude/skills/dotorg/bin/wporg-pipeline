@@ -129,8 +129,13 @@ cmd_run() {
 	git -C "$path" fetch -q origin trunk
 	if [[ $(git -C "$path" rev-parse HEAD) == "$head" ]] && ! git -C "$path" merge-tree --write-tree origin/trunk HEAD >/dev/null 2>&1; then
 		local new_head
-		if ! new_head=$("$BIN/wporg-rebase" "$pr"); then
+		if ! new_head=$("$BIN/wporg-rebase" "$pr" | tail -n 1); then
 			finish "$pr" 1 "needs rebase: conflicts with trunk the session could not resolve"; return 1
+		fi
+		# The rebase script prints only the new SHA on stdout; anything else means it is not to be trusted.
+		if [[ ! $new_head =~ ^[0-9a-f]{40}$ || $new_head != $(git -C "$path" rev-parse HEAD) ]]; then
+			git -C "$path" checkout -q -B "$branch" "$head"
+			finish "$pr" 1 "failed: rebase reported an unexpected head; branch restored to ${head:0:10}"; return 1
 		fi
 		if ! "$BIN/wporg-test" "$path"; then
 			git -C "$path" checkout -q -B "$branch" "$head"
