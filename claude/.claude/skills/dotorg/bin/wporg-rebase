@@ -210,7 +210,8 @@ while [[ -d $gitdir/rebase-merge || -d $gitdir/rebase-apply ]]; do
 		[[ $f =~ ^[A-Za-z0-9._/-]+$ && $f != *..* ]] || fail "unsafe conflicted path" "Conflicted path contains unsupported characters: $f."
 		# An Edit rule names a path, not what it resolves to: a symlinked file or directory could point anywhere.
 		[[ -L $path/$f ]] && fail "symlinked conflict path" "Conflicted path is a symlink: $f."
-		[[ $(cd "$path" && pwd -P)/$f -ef $(cd "$path/$(dirname "$f")" && pwd -P)/$(basename "$f") ]] || fail "conflict path under a symlink" "Conflicted path sits under a symlinked directory: $f."
+		real_dir=$(cd "$path/$(dirname "$f")" 2>/dev/null && pwd -P) || fail "conflict path missing" "Conflicted path's directory cannot be resolved: $f."
+		[[ $real_dir == "$(cd "$path" && pwd -P)/$(dirname "$f")" || ( $(dirname "$f") == . && $real_dir == "$(cd "$path" && pwd -P)" ) ]] || fail "conflict path under a symlink" "Conflicted path sits under a symlinked directory: $f."
 	done <<< "$conflicted"
 	settings=$(session_settings "$conflicted") || settings=""
 	[[ -n $settings ]] && jq -e '.permissions.allow | length > 3' <<< "$settings" >/dev/null 2>&1 || fail "session settings" "Could not build the session's permission settings."
