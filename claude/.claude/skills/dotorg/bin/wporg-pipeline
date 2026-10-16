@@ -83,7 +83,11 @@ cmd_run() {
 
 	log "PR #$pr ($branch) at ${head:0:10}"
 	event pipeline start "$pr" "${head:0:10}"
-	state_set "$pr" ".head = \"$head\" | .branch = \"$branch\" | .verdict = \"running\""
+	# A new head resets the attempt count; a failed run on the same head bumps it, so the sweep retries up to three times.
+	local attempts
+	attempts=$(state_get "$pr" attempts); attempts=${attempts:-0}
+	[[ $(state_get "$pr" head) == "$head" ]] || attempts=0
+	state_set "$pr" ".head = \"$head\" | .branch = \"$branch\" | .verdict = \"running\" | .attempts = $(( attempts + 1 ))"
 
 	path=$("$BIN/wporg-worktree" path "$branch")
 	[[ -n $path ]] || path=$("$BIN/wporg-worktree" new "$branch")
@@ -154,7 +158,7 @@ cmd_run() {
 	else
 		verdict="ready: nothing to fix"
 	fi
-	state_set "$pr" ".verdict = \"$verdict\" | .unpushed = $unpushed"
+	state_set "$pr" ".verdict = \"$verdict\" | .unpushed = $unpushed | .failed = $([[ $rc == 0 ]] && echo false || echo true)"
 	event pipeline "$([[ $rc == 0 ]] && echo ok || echo failed)" "$pr" "$verdict"
 	echo
 	echo "PR #$pr: $verdict"
@@ -169,8 +173,11 @@ cmd_sweep() {
 	local checked=0 new=0
 	while read -r n head; do
 		checked=$(( checked + 1 ))
-		seen=$(state_get "$n" head)
-		[[ $seen == "$head" ]] && continue
+		seen=$(state_get "$n" head); attempts=$(state_get "$n" attempts)
+		if [[ $seen == "$head" ]]; then
+			# Same head: retry only a failed run, and at most three times.
+			[[ $(state_get "$n" failed) == "true" && ${attempts:-0} -lt 3 ]] || continue
+		fi
 		new=$(( new + 1 ))
 		log "Sweep: PR #$n has a new head."
 		"$BIN/wporg-pipeline" run "$n" < /dev/null || rc=1
