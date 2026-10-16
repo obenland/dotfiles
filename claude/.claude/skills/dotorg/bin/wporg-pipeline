@@ -28,7 +28,8 @@ Usage: wporg-pipeline run <PR> [--force] [--effort low|medium|high] [--rounds N]
        wporg-pipeline sweep
        wporg-pipeline status [PR]
 
-run reviews a head once; --force reviews and tests it again. A branch that conflicts with trunk is
+run reviews a head once; --force reviews and tests it again. The sweep retries a failed head once, and only
+when the failure was a session or API error; other failures wait for a new push. A branch that conflicts with trunk is
 rebased, tested, and pushed with a lease first. Round 1 reviews the PR at --effort (default high);
 each later round resumes the same sessions at medium effort and reviews only the fix commit, until a
 round changes nothing or --rounds (default 3) is reached. --min-rounds forces at least that many
@@ -67,9 +68,12 @@ lock() {
 
 clean_tree() { [[ -z $(git -C "$1" status --porcelain | grep -vE '^\?\? (vendor|environments/node_modules)$') ]]; }
 
+# finish <pr> <rc> <verdict> [unpushed] [transient] — transient failures (a session or API error) are retried
+# once by the sweep; deterministic ones (conflicts, failing checks, a refused push) wait for a new push.
 finish() {
-	local pr=$1 rc=$2 verdict=$3 unpushed=${4:-0}
-	state_set "$pr" '.verdict = $v | .unpushed = ($u | tonumber) | .failed = ($f == "true")' --arg v "$verdict" --arg u "$unpushed" --arg f "$([[ $rc == 0 ]] && echo false || echo true)"
+	local pr=$1 rc=$2 verdict=$3 unpushed=${4:-0} transient=${5:-false}
+	state_set "$pr" '.verdict = $v | .unpushed = ($u | tonumber) | .failed = ($f == "true") | .transient = ($t == "true")' \
+		--arg v "$verdict" --arg u "$unpushed" --arg f "$([[ $rc == 0 ]] && echo false || echo true)" --arg t "$transient"
 	event pipeline "$([[ $rc == 0 ]] && echo ok || echo failed)" "$pr" "$verdict"
 	echo
 	echo "PR #$pr: $verdict"
@@ -94,7 +98,7 @@ cmd_run() {
 	[[ $rounds =~ ^[0-9]+$ && $min_rounds =~ ^[0-9]+$ ]] || usage 1
 	lock
 
-	local json head branch state draft path rc=0 reviewed
+	local json head branch state draft path rc=0 reviewed transient=false
 	json=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefOid,headRefName,state,isDraft)
 	head=$(jq -r .headRefOid <<< "$json"); branch=$(jq -r .headRefName <<< "$json")
 	state=$(jq -r .state <<< "$json"); draft=$(jq -r .isDraft <<< "$json")
@@ -167,10 +171,10 @@ cmd_run() {
 			fi
 			before=$(git -C "$path" rev-parse HEAD)
 			if ! "$BIN/wporg-review" "$pr" review --round "$round" --effort "$round_effort" --base "$head"; then
-				rc=1; break
+				rc=1; transient=true; break
 			fi
 			if ! "$BIN/wporg-review" "$pr" resolve --round "$round" --effort "$round_effort" --base "$head"; then
-				rc=1; break
+				rc=1; transient=true; break
 			fi
 			rounds_run=$round
 			after=$(git -C "$path" rev-parse HEAD)
@@ -210,7 +214,7 @@ cmd_run() {
 	else
 		verdict="ready: nothing to fix"
 	fi
-	finish "$pr" "$rc" "$verdict" "$unpushed"
+	finish "$pr" "$rc" "$verdict" "$unpushed" "$transient"
 }
 
 cmd_sweep() {
@@ -223,8 +227,8 @@ cmd_sweep() {
 		checked=$(( checked + 1 ))
 		seen=$(state_get "$n" head); attempts=$(state_num "$n" attempts)
 		if [[ $seen == "$head" ]]; then
-			# Same head: retry only a failed run, and at most three times.
-			[[ $(state_get "$n" failed) == "true" && $attempts -lt 3 ]] || continue
+			# Same head: retry once, and only a failure that can change without a push.
+			[[ $(state_get "$n" failed) == "true" && $(state_get "$n" transient) == "true" && $attempts -lt 2 ]] || continue
 		fi
 		new=$(( new + 1 ))
 		log "Sweep: PR #$n has a new head."
