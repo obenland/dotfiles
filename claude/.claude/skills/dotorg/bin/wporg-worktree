@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+#
+# wporg-worktree — create, list and remove sibling worktrees of the wordpress.org checkout.
+#
+# Worktrees live next to the main checkout as <checkout>-<branch-slug>, the
+# layout already in use. Each new worktree gets vendor/ and
+# environments/node_modules linked from the main checkout so phpcs and wp-env
+# work there without a second install.
+#
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+usage() {
+	cat <<USAGE
+Usage: wporg-worktree new <branch> [<start-point>]   Create ../<checkout>-<slug> on <branch> (default start: origin/trunk).
+       wporg-worktree rm <branch|path> [--force]     Remove the worktree; delete the branch when its PR is closed.
+       wporg-worktree ls                              List worktrees with dirty-file counts and PR state.
+       wporg-worktree path <branch>                   Print the worktree path for a branch.
+
+WPORG_REPO overrides the main checkout (default: $WPORG_REPO).
+USAGE
+	exit "${1:-0}"
+}
+
+require git gh
+
+parent=$(dirname "$WPORG_REPO")
+base=$(basename "$WPORG_REPO")
+
+slug_for() { echo "${1//\//-}"; }
+
+path_for_branch() {
+	git -C "$WPORG_REPO" worktree list --porcelain | awk -v b="refs/heads/$1" '
+		/^worktree /{p=substr($0,10)} /^branch /{if ($2==b) print p}'
+}
+
+# The vendor and node_modules links are ours, not the branch's; a trailing-slash ignore pattern does not match a symlink.
+dirty_entries() {
+	git -C "$1" status --porcelain | grep -vE '^\?\? (vendor|environments/node_modules)$' || true
+}
+
+pr_state() {
+	gh pr list --repo "$WPORG_GH_REPO" --head "$1" --state all --limit 1 --json number,state \
+		--jq 'if length==0 then "no-pr" else "\(.[0].state|ascii_downcase) #\(.[0].number)" end' 2>/dev/null || echo "unknown"
+}
+
+cmd_new() {
+	local branch=${1:-} start=${2:-origin/trunk}
+	[[ -n $branch ]] || usage 1
+	local path="$parent/$base-$(slug_for "$branch")"
+	[[ -e $path ]] && die "$path already exists."
+	local existing
+	existing=$(path_for_branch "$branch")
+	[[ -n $existing ]] && die "Branch $branch is already checked out at $existing."
+
+	git -C "$WPORG_REPO" fetch -q origin trunk
+	if git -C "$WPORG_REPO" show-ref -q --verify "refs/heads/$branch"; then
+		git -C "$WPORG_REPO" worktree add -q "$path" "$branch"
+	elif git -C "$WPORG_REPO" fetch -q fork "$branch" 2>/dev/null; then
+		git -C "$WPORG_REPO" worktree add -q --track -b "$branch" "$path" "fork/$branch"
+	else
+		git -C "$WPORG_REPO" worktree add -q -b "$branch" "$path" "$start"
+	fi
+
+	# PR heads live on the fork; make a bare `git push` go there.
+	git -C "$path" config "branch.$branch.remote" fork
+	git -C "$path" config "branch.$branch.merge" "refs/heads/$branch"
+	git -C "$path" config push.autoSetupRemote true
+
+	[[ -d $WPORG_REPO/vendor ]] && ln -s "$WPORG_REPO/vendor" "$path/vendor"
+	[[ -d $WPORG_REPO/environments/node_modules ]] && ln -s "$WPORG_REPO/environments/node_modules" "$path/environments/node_modules"
+
+	event worktree created "" "$branch"
+	echo "$path"
+}
+
+cmd_rm() {
+	local target=${1:-} force=${2:-}
+	[[ -n $target ]] || usage 1
+	local path branch
+	if [[ -d $target ]]; then
+		path=$(cd "$target" && pwd -P)
+	else
+		path=$(path_for_branch "$target")
+		[[ -n $path ]] || die "No worktree for branch $target."
+	fi
+	[[ $path != "$(cd "$WPORG_REPO" && pwd -P)" ]] || die "Refusing to remove the main checkout."
+	branch=$(git -C "$path" branch --show-current)
+
+	if [[ -n $(dirty_entries "$path") && $force != "--force" ]]; then
+		die "$path has uncommitted changes. Pass --force to discard them."
+	fi
+	rm -f "$path/vendor" "$path/environments/node_modules"
+	git -C "$WPORG_REPO" worktree remove ${force:+--force} "$path"
+
+	local state
+	state=$(pr_state "$branch")
+	case $state in
+		closed*|merged*)
+			git -C "$WPORG_REPO" branch -D "$branch" >/dev/null && log "Deleted branch $branch ($state)." ;;
+		*)
+			log "Kept branch $branch ($state)." ;;
+	esac
+	event worktree removed "" "$branch"
+	ok "Removed $path"
+}
+
+cmd_ls() {
+	git -C "$WPORG_REPO" worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^branch /{print p "\t" substr($2,12)}' |
+	while IFS=$'\t' read -r path branch; do
+		[[ $path == "$WPORG_REPO" ]] && continue
+		local dirty
+		dirty=$(dirty_entries "$path" | wc -l | tr -d ' ')
+		printf '%-55s %-45s dirty=%-3s %s\n' "$path" "$branch" "$dirty" "$(pr_state "$branch")"
+	done
+}
+
+case ${1:-} in
+	new)  shift; cmd_new "$@" ;;
+	rm)   shift; cmd_rm "$@" ;;
+	ls)   cmd_ls ;;
+	path) [[ -n ${2:-} ]] || usage 1; path_for_branch "$2" ;;
+	-h|--help|"") usage ;;
+	*) usage 1 ;;
+esac

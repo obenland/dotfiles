@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+#
+# wporg-pipeline — drive one PR from "opened" to "ready for SVN" without a human in the loop.
+#
+# run:    review the PR head if it has not been reviewed, triage the findings
+#         into a fix commit in the worktree, run the local checks on the
+#         result, and record a verdict. Nothing is pushed.
+# sweep:  run every open PR of yours whose head has changed since it was last seen.
+# status: what the event log says, per PR.
+#
+# Runs are serialized through a lock, because the wp-env suites are heavy.
+# Scheduling the sweep is up to you; sweep.plist.example shows a launchd agent.
+#
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="$SKILL_DIR/bin"
+STATE_DIR="${WPORG_STATE_DIR:-$HOME/.cache/wporg-pipeline/state}"
+LOCK_DIR="${WPORG_LOCK_DIR:-$HOME/.cache/wporg-pipeline/lock}"
+
+usage() {
+	cat <<USAGE
+Usage: wporg-pipeline run <PR> [--force] [--effort low|medium|high]
+       wporg-pipeline sweep
+       wporg-pipeline status [PR]
+
+run reviews a head once; --force reviews and tests it again. A fix commit stays in the worktree until you push it.
+USAGE
+	exit "${1:-0}"
+}
+
+require gh jq git
+
+mkdir -p "$STATE_DIR"
+
+state_get() { jq -r ".$2 // empty" "$STATE_DIR/$1.json" 2>/dev/null || true; }
+state_set() {
+	local pr=$1; shift
+	local f="$STATE_DIR/$pr.json" tmp
+	tmp=$(mktemp -t wporg-state)
+	{ [[ -f $f ]] && cat "$f" || echo '{}'; } | jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$* | .updated = \$ts" > "$tmp"
+	mv "$tmp" "$f"
+}
+
+lock() {
+	mkdir -p "$(dirname "$LOCK_DIR")"
+	if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+		if [[ -f $LOCK_DIR/pid ]] && kill -0 "$(cat "$LOCK_DIR/pid")" 2>/dev/null; then
+			die "Another pipeline run holds the lock (pid $(cat "$LOCK_DIR/pid"))."
+		fi
+		rm -rf "$LOCK_DIR"; mkdir "$LOCK_DIR"
+	fi
+	echo $$ > "$LOCK_DIR/pid"
+	trap 'rm -rf "$LOCK_DIR"' EXIT
+}
+
+cmd_run() {
+	local pr=${1:-} force="" effort="high"
+	[[ $pr =~ ^[0-9]+$ ]] || usage 1
+	shift
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+			--force)  force=1 ;;
+			--effort) effort=$2; shift ;;
+			*) usage 1 ;;
+		esac
+		shift
+	done
+	lock
+
+	local json head branch state draft path rc=0 reviewed
+	json=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefOid,headRefName,state,isDraft)
+	head=$(jq -r .headRefOid <<< "$json"); branch=$(jq -r .headRefName <<< "$json")
+	state=$(jq -r .state <<< "$json"); draft=$(jq -r .isDraft <<< "$json")
+	[[ $state == "OPEN" ]] || { log "PR #$pr is $state; nothing to do."; state_set "$pr" ".head = \"$head\" | .verdict = \"closed\""; return 0; }
+	[[ $draft == "false" ]] || { log "PR #$pr is a draft; skipping."; return 0; }
+
+	log "PR #$pr ($branch) at ${head:0:10}"
+	event pipeline start "$pr" "${head:0:10}"
+	state_set "$pr" ".head = \"$head\" | .branch = \"$branch\" | .verdict = \"running\""
+
+	path=$("$BIN/wporg-worktree" path "$branch")
+	[[ -n $path ]] || path=$("$BIN/wporg-worktree" new "$branch")
+	# Fast-forward the worktree to the PR head. A local fix commit the PR has moved past is never discarded; the run just reports it.
+	git -C "$path" fetch -q fork "$branch" 2>/dev/null || true
+	if ! git -C "$path" merge -q --ff-only "$head" 2>/dev/null; then
+		warn "$path is not at the PR head and cannot fast-forward; reconcile it by hand (unpushed fix commit?)."
+	fi
+	# Never commit or test on top of someone's uncommitted work.
+	if [[ -n $(git -C "$path" status --porcelain | grep -vE '^\?\? (vendor|environments/node_modules)$') ]]; then
+		state_set "$pr" ".verdict = \"blocked: uncommitted changes in $path\""
+		event pipeline blocked "$pr" "dirty worktree"
+		die "$path has uncommitted changes; commit or stash them, then rerun."
+	fi
+
+	# Review once per head.
+	reviewed=$(state_get "$pr" reviewed_head)
+	if [[ $reviewed == "$head" && -z $force ]]; then
+		log "Head already reviewed; skipping review."
+	else
+		if "$BIN/wporg-review" "$pr" review --effort "$effort"; then
+			state_set "$pr" ".reviewed_head = \"$head\""
+		else
+			rc=1
+		fi
+		if [[ $rc == 0 ]] && ! "$BIN/wporg-review" "$pr" resolve; then
+			rc=1
+		fi
+	fi
+
+	# Test the worktree as it stands, fix commit included.
+	local wt_head tested
+	wt_head=$(git -C "$path" rev-parse HEAD)
+	tested=$(state_get "$pr" tested_head)
+	if [[ $tested == "$wt_head" && -z $force ]]; then
+		log "Worktree head already tested; skipping tests."
+	elif "$BIN/wporg-test" "$path"; then
+		state_set "$pr" ".tested_head = \"$wt_head\""
+	else
+		rc=1
+	fi
+
+	local verdict unpushed
+	unpushed=$(git -C "$path" log --oneline "$head..HEAD" 2>/dev/null | wc -l | tr -d ' ')
+	if [[ $rc != 0 ]]; then
+		verdict="failed"
+	elif [[ $unpushed -gt 0 ]]; then
+		verdict="ready: $unpushed fix commit(s) to push with: git -C $path push fork $branch"
+	else
+		verdict="ready: nothing to fix"
+	fi
+	state_set "$pr" ".verdict = \"$verdict\" | .unpushed = $unpushed"
+	event pipeline "$([[ $rc == 0 ]] && echo ok || echo failed)" "$pr" "$verdict"
+	echo
+	echo "PR #$pr: $verdict"
+	[[ -f $HOME/.cache/wporg-pipeline/reviews/$pr.md ]] && echo "Review and triage: $HOME/.cache/wporg-pipeline/reviews/$pr.md"
+	return $rc
+}
+
+cmd_sweep() {
+	local list n head seen rc=0
+	list=$(gh pr list --repo "$WPORG_GH_REPO" --author @me --state open --json number,headRefOid,isDraft --jq '.[] | select(.isDraft | not) | "\(.number) \(.headRefOid)"')
+	[[ -n $list ]] || { log "No open PRs."; return 0; }
+	while read -r n head; do
+		seen=$(state_get "$n" head)
+		[[ $seen == "$head" ]] && continue
+		log "Sweep: PR #$n has a new head."
+		"$BIN/wporg-pipeline" run "$n" < /dev/null || rc=1
+	done <<< "$list"
+	return $rc
+}
+
+cmd_status() {
+	local pr=${1:-}
+	[[ -f $WPORG_EVENT_LOG ]] || die "No event log at $WPORG_EVENT_LOG."
+	if [[ -n $pr ]]; then
+		jq -r --arg pr "$pr" 'select(.pr == $pr) | "\(.ts)  \(.step)\t\(.status)\t\(.detail)"' "$WPORG_EVENT_LOG"
+		[[ -f $STATE_DIR/$pr.json ]] && { echo; jq . "$STATE_DIR/$pr.json"; }
+	else
+		local f
+		for f in "$STATE_DIR"/*.json; do
+			[[ -f $f ]] || continue
+			jq -r '"#\(input_filename | split("/") | last | rtrimstr(".json"))\t\(.updated // "")\t\(.verdict // "")"' "$f"
+		done | sort -k2 -r
+	fi
+}
+
+case ${1:-} in
+	run)    shift; cmd_run "$@" ;;
+	sweep)  cmd_sweep ;;
+	status) shift; cmd_status "$@" ;;
+	-h|--help|"") usage ;;
+	*) usage 1 ;;
+esac

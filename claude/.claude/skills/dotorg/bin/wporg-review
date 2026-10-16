@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+#
+# wporg-review — run the review half of the loop headless, with a local file as the message bus.
+#
+# review:  /code-review writes its findings to ~/.cache/wporg-pipeline/reviews/<PR>.md.
+#          Nothing is posted to GitHub.
+# resolve: inside the PR's worktree, triage every finding in that file under
+#          ../review-policy.md: fix the must-fixes in one commit, record the
+#          disposition of every finding back into the file. Unresolved GitHub
+#          threads from bots are folded in when --github is given. The commit
+#          is pushed only with --push.
+#
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+POLICY_FILE="$SKILL_DIR/review-policy.md"
+REVIEW_DIR="${WPORG_REVIEW_DIR:-$HOME/.cache/wporg-pipeline/reviews}"
+
+usage() {
+	cat <<USAGE
+Usage: wporg-review <PR> [review|resolve|both] [options]
+
+  review    Review the PR headless and save the findings to $REVIEW_DIR/<PR>.md.
+  resolve   In the PR's worktree, triage the saved findings per review-policy.md:
+            fix must-fixes in one commit, write each finding's disposition into the file.
+  both      review, then resolve.
+
+Options:
+  --effort low|medium|high   Review effort (default: high).
+  --github                   resolve: also triage unresolved GitHub review threads on the PR,
+                             replying to and resolving them (posts from your account).
+  --push                     resolve: push the fix commit to the PR branch afterwards.
+  --dry-run                  resolve: report what would change; edit, commit, and post nothing.
+USAGE
+	exit "${1:-0}"
+}
+
+require claude gh jq git
+
+pr=${1:-}; [[ $pr =~ ^[0-9]+$ ]] || usage 1
+mode=${2:-both}
+[[ $mode =~ ^(review|resolve|both)$ ]] || usage 1
+shift 2 2>/dev/null || shift 1
+dry=""; github=""; push=""; effort="high"
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		--dry-run) dry=1 ;;
+		--github)  github=1 ;;
+		--push)    push=1 ;;
+		--effort)  effort=$2; shift ;;
+		*) usage 1 ;;
+	esac
+	shift
+done
+
+review_file="$REVIEW_DIR/$pr.md"
+
+# headless <cwd> <prompt> [<extra system prompt>] — one non-interactive Claude run; prints its result.
+headless() {
+	local cwd=$1 prompt=$2 extra=${3:-} out
+	if [[ -n $extra ]]; then
+		out=$(cd "$cwd" && claude -p --output-format json --append-system-prompt "$extra" "$prompt")
+	else
+		out=$(cd "$cwd" && claude -p --output-format json "$prompt")
+	fi
+	if [[ $(jq -r '.is_error' <<< "$out") == "true" ]]; then
+		jq -r '.result' <<< "$out" >&2
+		return 1
+	fi
+	jq -r '.result' <<< "$out"
+	echo "  [turns=$(jq -r '.num_turns' <<< "$out") cost=\$$(jq -r '.total_cost_usd * 100 | round / 100' <<< "$out")]" >&2
+}
+
+do_review() {
+	mkdir -p "$REVIEW_DIR"
+	local head result
+	head=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefOid --jq .headRefOid)
+	log "Reviewing PR #$pr at $head (effort $effort)…"
+	event review start "$pr" "$head"
+	# The skill reads the effort level only when it comes before the target.
+	if ! result=$(headless "$WPORG_REPO" "/code-review $effort $pr"); then
+		event review failed "$pr"; return 1
+	fi
+	{
+		echo "# Review of PR #$pr"
+		echo
+		echo "- head: $head"
+		echo "- reviewed: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+		echo "- effort: $effort"
+		echo
+		echo "## Findings"
+		echo
+		printf '%s\n' "$result"
+	} > "$review_file"
+	event review ok "$pr" "$review_file"
+	ok "Findings saved to $review_file"
+}
+
+do_resolve() {
+	[[ -f $review_file ]] || die "No saved review for PR #$pr. Run: wporg-review $pr review"
+	local branch path extra prompt
+	branch=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefName --jq .headRefName)
+	path=$("$SKILL_DIR/bin/wporg-worktree" path "$branch")
+	[[ -n $path ]] || path=$("$SKILL_DIR/bin/wporg-worktree" new "$branch")
+
+	extra=$(cat "$POLICY_FILE")
+	prompt="Triage the review findings in $review_file for PR #$pr (branch $branch, this worktree). "
+	prompt+="Verify each finding against the code. Fix the must-fixes in a single commit on top of the PR's commits. "
+	prompt+="Then append a '## Triage' section to $review_file with one line per finding: fixed (with the commit subject), not applied (with the one-sentence reason), or follow-up. "
+	prompt+="Do not push."
+	if [[ -n $github ]]; then
+		prompt+=" Also run /resolve-pr-reviews $pr for the unresolved GitHub review threads, under the same policy, and list those threads in the Triage section too."
+	fi
+	if [[ -n $dry ]]; then
+		extra+=$'\n\nDRY RUN: report what you would fix, record, reply to, or resolve. Do not edit files, commit, push, reply, or resolve anything.'
+	fi
+
+	log "Resolving findings for PR #$pr in $path${dry:+ (dry run)}${github:+ (+GitHub threads)}…"
+	event resolve start "$pr" "${dry:+dry-run}"
+	if ! headless "$path" "$prompt" "$extra"; then
+		event resolve failed "$pr"; return 1
+	fi
+	event resolve ok "$pr" "${dry:+dry-run}"
+
+	if [[ -n $push && -z $dry ]]; then
+		if [[ -n $(git -C "$path" log "fork/$branch..HEAD" --oneline 2>/dev/null) ]]; then
+			log "Pushing fix commit to fork/$branch…"
+			git -C "$path" push fork "$branch"
+			event push ok "$pr"
+		else
+			log "Nothing to push."
+		fi
+	fi
+}
+
+case $mode in
+	review)  do_review ;;
+	resolve) do_resolve ;;
+	both)    do_review && do_resolve ;;
+esac

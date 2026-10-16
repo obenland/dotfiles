@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+#
+# wporg-sandbox — drive the dotorg sandbox without a terminal session.
+#
+# For human-initiated use only. The sandbox shares the production database
+# and object cache, so the automated pipeline never calls this script; its
+# runtime checks run in wp-env through wporg-test. The smoke step here
+# executes the applied PR against production data and writes whatever the
+# code caches, so run it only when you have decided that is acceptable.
+# Committing stays a human step: run `wporgpr <PR>` on the sandbox and choose c.
+#
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+HOST="${WPORG_SANDBOX_HOST:-wporg}"
+PROXY="${WPORG_SOCKS:-127.0.0.1:8080}"
+SYNC="/home/wporg/public_html/bin/sync/github-wordpress.org.sh"
+STATE_DIR='$HOME/.sync-temp/gh-wporg'
+ERROR_LOG="/tmp/php-errors"
+MARK_FILE="$HOME/.cache/wporg-pipeline/php-errors.mark"
+BODY_FILE=$(mktemp -t wporg-smoke)
+trap 'rm -f "$BODY_FILE"' EXIT
+
+usage() {
+	cat <<USAGE
+Usage: wporg-sandbox status                 What the sync script currently has applied.
+       wporg-sandbox apply <PR> [--replace] Apply a PR and leave it in place for testing.
+       wporg-sandbox revert                 Undo the applied PR.
+       wporg-sandbox lint                   php -l the applied files with the sandbox's PHP.
+       wporg-sandbox urls <PR>              Print the smoke URLs derived from the PR's files.
+       wporg-sandbox smoke [URL...]         Request URLs through the proxy; default: the wordpress.org front page.
+       wporg-sandbox errors [mark|since|N]  Mark the PHP error log, show lines since the mark, or the last N lines.
+       wporg-sandbox verify <PR> [--revert] apply, lint, smoke, errors; --revert puts the sandbox back afterwards.
+       wporg-sandbox ssh <command...>       Run a command on the sandbox with the sandbox PATH.
+
+Env: WPORG_SANDBOX_HOST (default wporg), WPORG_SOCKS (default 127.0.0.1:8080).
+USAGE
+	exit "${1:-0}"
+}
+
+require ssh curl gh nc
+
+# The ssh alias forces an interactive bash; override that and add the sandbox's own bin dirs.
+# -n keeps ssh off stdin, so a caller's read loop is not eaten by the first call.
+remote() {
+	ssh -n -o RemoteCommand=none -o RequestTTY=no -o BatchMode=yes -o ConnectTimeout=15 "$HOST" \
+		'export PATH="$PATH:$HOME/bin:$HOME/.local/bin:/home/wporg/public_html/bin"; '"$*"
+}
+
+check_proxy() {
+	nc -z -w 2 "${PROXY%:*}" "${PROXY#*:}" >/dev/null 2>&1 || die "SOCKS proxy $PROXY is not listening. Start it with: ssh -D ${PROXY#*:} proxy.automattic.com"
+}
+
+applied_label() {
+	remote "cat $STATE_DIR/applied-label.txt 2>/dev/null || true"
+}
+
+cmd_status() {
+	local label
+	label=$(applied_label)
+	if [[ -n $label ]]; then
+		echo "applied: $label"
+	else
+		echo "nothing applied"
+	fi
+}
+
+cmd_apply() {
+	local pr=${1:-} replace=${2:-}
+	[[ $pr =~ ^[0-9]+$ ]] || usage 1
+	local label keys="ttt"
+	label=$(applied_label)
+	if [[ -n $label ]]; then
+		[[ $replace == "--replace" ]] || die "Sandbox already has a PR applied ($label). Revert it or pass --replace."
+		keys="rttt"
+	fi
+	log "Applying PR #$pr to the sandbox…"
+	event sandbox-apply start "$pr"
+	# One-key prompts, in order: r reverts a previous run, any key skips the diff, t leaves this run in place.
+	# A dirty-file prompt reads a t as "no" and aborts, which is the safe outcome; a stray t at the end is EOF-safe.
+	if remote "printf '%s' '$keys' | $SYNC $pr"; then
+		event sandbox-apply ok "$pr"
+	else
+		event sandbox-apply failed "$pr"
+		die "Apply failed; see output above."
+	fi
+}
+
+cmd_revert() {
+	[[ -n $(applied_label) ]] || { warn "Nothing applied."; return 0; }
+	log "Reverting the sandbox…"
+	remote "$SYNC --revert"
+	event sandbox-revert ok
+}
+
+cmd_lint() {
+	local files
+	files=$(remote "cat $STATE_DIR/applied-files.txt $STATE_DIR/new-files.txt 2>/dev/null" | awk -F'\t' '{print $NF}' | grep '\.php$' | sort -u || true)
+	[[ -n $files ]] || { warn "No applied PHP files to lint."; return 0; }
+	local failed=0 f q
+	while IFS= read -r f; do
+		# PR file names are author-controlled; only plain paths reach the remote shell, and quoted.
+		if [[ ! $f =~ ^/[A-Za-z0-9._/-]+\.php$ ]]; then
+			warn "skipped suspicious path: $f"; failed=1; continue
+		fi
+		q=$(printf '%q' "$f")
+		if remote "[ -e $q ] && php -l $q >/dev/null"; then
+			ok "php -l $f"
+		else
+			warn "php -l FAILED $f"; failed=1
+		fi
+	done <<< "$files"
+	event sandbox-lint "$([[ $failed == 0 ]] && echo ok || echo failed)"
+	return $failed
+}
+
+# Map changed paths to pages that exercise them. Only hosts mapped to the sandbox in /etc/hosts belong here.
+urls_for_pr() {
+	local pr=$1
+	gh pr view "$pr" --repo "$WPORG_GH_REPO" --json files --jq '.files[].path' | while IFS= read -r p; do
+		case $p in
+			wordpress.org/public_html/wp-content/plugins/plugin-directory/*|api.wordpress.org/public_html/plugins/*)
+				echo "https://wordpress.org/plugins/"; echo "https://wordpress.org/plugins/akismet/"
+				echo "https://api.wordpress.org/plugins/info/1.2/?action=plugin_information&slug=akismet" ;;
+			wordpress.org/public_html/wp-content/plugins/theme-directory/*|api.wordpress.org/public_html/themes/*)
+				echo "https://wordpress.org/themes/"; echo "https://wordpress.org/themes/twentytwentyfive/"
+				echo "https://api.wordpress.org/themes/info/1.2/?action=theme_information&request%5Bslug%5D=twentytwentyfive" ;;
+			wordpress.org/public_html/wp-content/plugins/support-forums/*|wordpress.org/public_html/wp-content/plugins/support-*|wordpress.org/public_html/wp-content/themes/pub/wporg-support*)
+				echo "https://wordpress.org/support/"; echo "https://wordpress.org/support/forum/how-to-and-troubleshooting/" ;;
+			wordpress.org/public_html/wp-content/plugins/photo-directory/*|wordpress.org/public_html/wp-content/themes/pub/wporg-photos*)
+				echo "https://wordpress.org/photos/" ;;
+			wordpress.org/public_html/wp-content/plugins/wporg-learn*|wordpress.org/public_html/wp-content/themes/pub/wporg-learn*)
+				echo "https://learn.wordpress.org/" ;;
+			wordpress.org/public_html/wp-content/plugins/jobswp/*)
+				echo "https://jobs.wordpress.net/" ;;
+			wordpress.org/public_html/wp-content/themes/pub/wporg-main*|wordpress.org/public_html/wp-content/themes/pub/wporg-parent*|wordpress.org/public_html/wp-content/mu-plugins/*)
+				echo "https://wordpress.org/"; echo "https://wordpress.org/news/" ;;
+			wordpress.org/public_html/wp-content/plugins/wporg-*make*|wordpress.org/public_html/wp-content/plugins/wporg-o2*|wordpress.org/public_html/wp-content/plugins/trac-notifications/*)
+				echo "https://make.wordpress.org/"; echo "https://make.wordpress.org/core/" ;;
+			api.wordpress.org/public_html/events/*)
+				echo "https://api.wordpress.org/events/1.0/?location=Berlin" ;;
+			api.wordpress.org/*)
+				echo "https://api.wordpress.org/core/version-check/1.7/" ;;
+			buddypress.org/*|profiles.wordpress.org/*|common/includes/profiles/*)
+				echo "https://profiles.wordpress.org/obenland/" ;;
+			common/includes/wporg-sso/*)
+				echo "https://login.wordpress.org/"; echo "https://wordpress.org/" ;;
+			global.wordpress.org/*)
+				echo "https://de.wordpress.org/" ;;
+			translate.wordpress.org/*|wordpress.org/public_html/wp-content/plugins/wporg-gp-*)
+				echo "https://translate.wordpress.org/" ;;
+			*)
+				echo "https://wordpress.org/" ;;
+		esac
+	done | awk '!seen[$0]++'
+}
+
+cmd_smoke() {
+	check_proxy
+	local urls=("$@") failed=0 url out code ip secs
+	[[ ${#urls[@]} -gt 0 ]] || urls=("https://wordpress.org/")
+	for url in "${urls[@]}"; do
+		# -4 keeps /etc/hosts in charge of resolution; --socks5 (not -hostname) resolves locally for the same reason.
+		out=$(curl -4 --socks5 "$PROXY" -sS --max-time 30 -o "$BODY_FILE" -w '%{http_code} %{remote_ip} %{time_total}' "$url" 2>/dev/null || echo "000 - 0")
+		read -r code ip secs <<< "$out"
+		if [[ $ip != "127.0.0.1" ]]; then
+			warn "$url -> not via proxy (remote=$ip); refusing to judge a production response"; failed=1; continue
+		fi
+		if [[ $code =~ ^(2|3)[0-9][0-9]$ ]] && ! grep -qE 'Fatal error|Parse error|Uncaught ' "$BODY_FILE"; then
+			ok "$code ${secs}s $url"
+		else
+			warn "$code ${secs}s $url $(grep -m1 -oE '(Fatal error|Parse error|Uncaught )[^<]{0,120}' "$BODY_FILE" || true)"; failed=1
+		fi
+	done
+	event sandbox-smoke "$([[ $failed == 0 ]] && echo ok || echo failed)" "" "${#urls[@]} urls"
+	return $failed
+}
+
+cmd_errors() {
+	local what=${1:-25}
+	case $what in
+		mark)
+			mkdir -p "$(dirname "$MARK_FILE")"
+			remote "wc -l < $ERROR_LOG 2>/dev/null || echo 0" | tr -d ' ' > "$MARK_FILE"
+			log "Marked PHP error log at line $(cat "$MARK_FILE")." ;;
+		since)
+			[[ -f $MARK_FILE ]] || die "No mark; run 'wporg-sandbox errors mark' first."
+			local mark lines
+			mark=$(cat "$MARK_FILE")
+			# Claude's own scratch runs on the sandbox log here too; they are not the PR's.
+			lines=$(remote "tail -n +$((mark + 1)) $ERROR_LOG 2>/dev/null" | grep -v '/tmp/claude-' || true)
+			if [[ -n $lines ]]; then
+				echo "$lines" | cut -c1-240
+				return 1
+			fi
+			ok "No new PHP errors since the mark." ;;
+		*)
+			remote "tail -n $what $ERROR_LOG 2>/dev/null" | cut -c1-240 ;;
+	esac
+}
+
+cmd_verify() {
+	local pr=${1:-} revert=${2:-} rc=0
+	[[ $pr =~ ^[0-9]+$ ]] || usage 1
+	check_proxy
+	event sandbox-verify start "$pr"
+	cmd_errors mark
+	cmd_apply "$pr"
+	cmd_lint || rc=1
+	local urls
+	urls=$(urls_for_pr "$pr")
+	# shellcheck disable=SC2086
+	cmd_smoke $urls || rc=1
+	cmd_errors since || rc=1
+	if [[ $revert == "--revert" ]]; then
+		cmd_revert
+	else
+		log "PR #$pr is still applied on the sandbox. Commit with 'wporgpr $pr' there, or run: wporg-sandbox revert"
+	fi
+	event sandbox-verify "$([[ $rc == 0 ]] && echo ok || echo failed)" "$pr"
+	if [[ $rc == 0 ]]; then ok "PR #$pr verified on the sandbox."; else warn "PR #$pr has sandbox findings above."; fi
+	return $rc
+}
+
+case ${1:-} in
+	status) cmd_status ;;
+	apply)  shift; cmd_apply "$@" ;;
+	revert) cmd_revert ;;
+	lint)   cmd_lint ;;
+	urls)   [[ -n ${2:-} ]] || usage 1; urls_for_pr "$2" ;;
+	smoke)  shift; cmd_smoke "$@" ;;
+	errors) shift; cmd_errors "$@" ;;
+	verify) shift; cmd_verify "$@" ;;
+	ssh)    shift; remote "$@" ;;
+	-h|--help|"") usage ;;
+	*) usage 1 ;;
+esac

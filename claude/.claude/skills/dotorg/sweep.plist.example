@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent that runs `wporg-pipeline sweep` every 30 minutes.
+  Install by hand:
+    cp sweep.plist.example ~/Library/LaunchAgents/org.wordpress.wporg-pipeline.sweep.plist
+    edit the PATH entry so it includes the directory `command -v npm` prints
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.wordpress.wporg-pipeline.sweep.plist
+  Remove with `launchctl bootout gui/$(id -u)/org.wordpress.wporg-pipeline.sweep`.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>org.wordpress.wporg-pipeline.sweep</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/obenland/.claude/skills/dotorg/bin/wporg-pipeline</string>
+		<string>sweep</string>
+	</array>
+	<key>StartInterval</key><integer>1800</integer>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key><string>/Users/obenland/.nvm/versions/node/v24.21.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>StandardOutPath</key><string>/Users/obenland/.cache/wporg-pipeline/sweep.log</string>
+	<key>StandardErrorPath</key><string>/Users/obenland/.cache/wporg-pipeline/sweep.log</string>
+</dict>
+</plist>

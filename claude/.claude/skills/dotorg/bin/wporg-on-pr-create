@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#
+# wporg-on-pr-create — Claude Code PostToolUse hook. When a Bash call ran
+# `gh pr create` and GitHub answered with a WordPress/wordpress.org PR URL,
+# tell the session to start the pipeline for that PR. The hook itself starts
+# nothing; its output is the instruction the session acts on. Always exits 0.
+#
+set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+payload=$(cat)
+[[ $(jq -r '.tool_name // empty' <<< "$payload") == "Bash" ]] || exit 0
+command=$(jq -r '.tool_input.command // empty' <<< "$payload")
+[[ $command == *"gh pr create"* ]] || exit 0
+
+response=$(jq -r '.tool_response | if type == "string" then . else (.stdout // "") + "\n" + (.stderr // "") end' <<< "$payload")
+pr=$(grep -oE "github\.com/${WPORG_GH_REPO}/pull/[0-9]+" <<< "$response" | head -1 | grep -oE '[0-9]+$' || true)
+[[ -n $pr ]] || exit 0
+
+event pipeline queued "$pr" "on PR create"
+cat <<MSG
+PR #$pr was just created in $WPORG_GH_REPO. Start its pipeline now, in the background, and report the verdict when it finishes:
+  $HOME/.claude/skills/dotorg/bin/wporg-pipeline run $pr
+MSG
+exit 0

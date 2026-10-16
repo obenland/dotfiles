@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+#
+# wporg-test — run the checks CI runs, locally, against a PR's worktree.
+#
+# 1. phpcs on the branch, with the same script the PHPCS workflow uses.
+# 2. The PHPUnit suites whose paths the branch touches, chosen from
+#    .github/unit-tests-suites.yml exactly as the Unit Tests workflow does:
+#    standalone suites through vendor/bin/phpunit, WordPress suites through
+#    their wp-env environment, which has its own database and cache.
+# 3. A smoke request against each started environment's front page.
+#
+# Nothing here touches the dotorg sandbox.
+#
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+	cat <<USAGE
+Usage: wporg-test [<PR>|<branch>|<path>] [options]
+
+  Target defaults to the current directory when it is a wordpress.org checkout.
+
+Options:
+  --suite <key>   Run only this suite from .github/unit-tests-suites.yml (repeatable).
+  --all           Run every suite, not just the ones the branch touches.
+  --no-lint       Skip phpcs.
+  --no-tests      Skip PHPUnit.
+  --keep          Leave wp-env environments running afterwards.
+  --list          Print the suites the branch would run, then exit.
+USAGE
+	exit "${1:-0}"
+}
+
+require git gh php npm curl python3
+
+target=""; suites=(); all=""; lint=1; tests=1; keep=""; list_only=""
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		--suite)    suites+=("$2"); shift ;;
+		--all)      all=1 ;;
+		--no-lint)  lint="" ;;
+		--no-tests) tests="" ;;
+		--keep)     keep=1 ;;
+		--list)     list_only=1 ;;
+		-h|--help)  usage ;;
+		-*)         usage 1 ;;
+		*)          target=$1 ;;
+	esac
+	shift
+done
+
+# ── Resolve the worktree ────────────────────────────────────────────────────
+pr=""
+if [[ -z $target ]]; then
+	wt=$(git rev-parse --show-toplevel 2>/dev/null || true)
+	[[ -n $wt && -f $wt/.github/unit-tests-suites.yml ]] || die "Not inside a wordpress.org checkout; pass a PR, branch, or path."
+elif [[ $target =~ ^[0-9]+$ ]]; then
+	pr=$target
+	branch=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefName --jq .headRefName)
+	wt=$("$SKILL_DIR/bin/wporg-worktree" path "$branch")
+	[[ -n $wt ]] || wt=$("$SKILL_DIR/bin/wporg-worktree" new "$branch")
+elif [[ -d $target ]]; then
+	wt=$(cd "$target" && git rev-parse --show-toplevel)
+else
+	wt=$("$SKILL_DIR/bin/wporg-worktree" path "$target")
+	[[ -n $wt ]] || die "No worktree for branch $target. Create one: wporg-worktree new $target"
+fi
+wt=$(cd "$wt" && pwd -P)
+branch=$(git -C "$wt" branch --show-current)
+log "Worktree: $wt ($branch)"
+
+git -C "$wt" fetch -q origin trunk
+changed=$(git -C "$wt" diff --name-only origin/trunk...HEAD)
+[[ -n $changed ]] || warn "No files differ from origin/trunk."
+
+rc=0
+if [[ -n $list_only ]]; then
+	lint=""; tests=""
+fi
+event test start "$pr" "$branch"
+
+# ── phpcs ───────────────────────────────────────────────────────────────────
+if [[ -n $lint ]]; then
+	log "phpcs on changed PHP files…"
+	# The CI script only takes a name under remotes/origin/; point one at the merge-base so trunk's own changes don't count.
+	git -C "$wt" update-ref refs/remotes/origin/wporg-test-base "$(git -C "$wt" merge-base origin/trunk HEAD)"
+	if (cd "$wt" && BASE_REF=wporg-test-base php .github/bin/phpcs-branch.php < /dev/null); then
+		ok "phpcs clean"; event test-phpcs ok "$pr"
+	else
+		warn "phpcs reported violations"; event test-phpcs failed "$pr"; rc=1
+	fi
+	git -C "$wt" update-ref -d refs/remotes/origin/wporg-test-base
+fi
+
+# ── Suite selection ─────────────────────────────────────────────────────────
+# Mirrors the workflow's `changes` job: suite paths + shared paths for the type +
+# the plugins a WordPress suite's environment activates.
+select_suites() {
+	CHANGED="$changed" python3 -I - "$wt" "$all" "${suites[@]+"${suites[@]}"}" <<'PY'
+import sys, json, re, fnmatch, os
+wt, all_flag, *only = sys.argv[1:]
+changed = [l for l in os.environ.get('CHANGED', '').splitlines() if l]
+
+# A dedicated parser for this file's shape: two map levels, lists of quoted scalars, comments.
+def parse_suites_file(text):
+    shared = {}; suites = {}; section = None; cur = None; curkey = None; listkey = None
+    for raw in text.splitlines():
+        if raw.lstrip().startswith('#') or not raw.strip(): continue
+        line = re.sub(r'\s+#.*$', '', raw.rstrip())
+        indent = len(line) - len(line.lstrip()); body = line.strip()
+        if indent == 0:
+            section = body.rstrip(':'); continue
+        if section == 'shared-paths':
+            if indent == 2: curkey = body.rstrip(':'); shared[curkey] = []
+            elif body.startswith('- '): shared[curkey].append(body[2:].strip("'\""))
+        elif section == 'suites':
+            if indent == 2: curkey = body.rstrip(':'); suites[curkey] = {}; listkey = None
+            elif indent == 4:
+                k, _, v = body.partition(':'); v = v.strip().strip("'\"")
+                if v == '': suites[curkey][k] = []; listkey = k
+                else: suites[curkey][k] = v
+            elif body.startswith('- ') and listkey: suites[curkey][listkey].append(body[2:].strip("'\""))
+    return shared, suites
+
+shared, suites = parse_suites_file(open(os.path.join(wt, '.github/unit-tests-suites.yml')).read())
+
+def matches(path, pattern):
+    # dorny/paths-filter globs: ** spans directories; fnmatch's * also spans '/', which is what we want for '**'.
+    return fnmatch.fnmatch(path, pattern.replace('**', '*'))
+
+for key, s in suites.items():
+    if only and key not in only: continue
+    paths = list(shared.get(s['type'], [])) + list(s.get('paths', []))
+    if s['type'] == 'wordpress':
+        cfg = os.path.join(wt, 'environments', key, '.wp-env.test.json')
+        try:
+            for p in json.load(open(cfg)).get('plugins', []):
+                if p.startswith('../'): paths.append(p[3:] + '/**')
+        except FileNotFoundError:
+            pass
+    hit = all_flag or bool(only) or any(matches(c, p) for c in changed for p in paths)
+    if hit:
+        # Unit separator: bash collapses runs of tabs, which would shift empty fields.
+        print('\x1f'.join([s['type'], key, s.get('name', key), s.get('script', ''), s.get('working-directory', ''), s.get('phpunit-args', ''), s.get('bootstrap', '')]))
+PY
+}
+
+# Dedicated ports per worktree and suite keep test environments off the dev environments' 8888/8889.
+pick_ports() {
+	local seed port tests_port
+	seed=$(( $(printf '%s' "$wt/$1" | cksum | cut -d' ' -f1) % 40 ))
+	port=$(( 8900 + seed * 2 )); tests_port=$(( port + 1 ))
+	while nc -z 127.0.0.1 "$port" 2>/dev/null || nc -z 127.0.0.1 "$tests_port" 2>/dev/null; do
+		port=$(( port + 2 )); tests_port=$(( port + 1 ))
+	done
+	echo "$port $tests_port"
+}
+
+run_standalone() {
+	local key=$1 name=$2 wd=$3 args=$4 bootstrap=$5 stub=""
+	if [[ $bootstrap == "wpdb-stub" ]]; then
+		stub=$(mktemp -t phpunit-bootstrap).php
+		cat > "$stub" <<'PHP'
+<?php
+class wpdbStub {
+	public function prepare( $query, ...$args ) { return $query; }
+	public function get_results( $query, $output = 'OBJECT' ) { return []; }
+}
+PHP
+		args=${args//\/tmp\/phpunit-bootstrap.php/$stub}
+	fi
+	local -a argv=()
+	[[ -n $args ]] && read -ra argv <<< "$args"
+	log "PHP: $name"
+	if (cd "$wt/$wd" && "$wt/vendor/bin/phpunit" "${argv[@]+"${argv[@]}"}" < /dev/null); then
+		ok "$name passed"; event test-suite ok "$pr" "$key"
+	else
+		warn "$name failed"; event test-suite failed "$pr" "$key"; rc=1
+	fi
+	if [[ -n $stub ]]; then rm -f "$stub"; fi
+	return 0
+}
+
+started_envs=()
+run_wordpress() {
+	local key=$1 name=$2 script=$3 port tests_port
+	local -a envvars=()
+	read -r port tests_port <<< "$(pick_ports "$key")"
+	envvars=(WP_ENV_PORT="$port" WP_ENV_TESTS_PORT="$tests_port")
+	log "WP: $name (npm run $script, ports $port/$tests_port)"
+	if (cd "$wt/environments" && env "${envvars[@]+"${envvars[@]}"}" npm run --silent "$script" < /dev/null); then
+		ok "$name passed"; event test-suite ok "$pr" "$key"
+	else
+		warn "$name failed"; event test-suite failed "$pr" "$key"; rc=1
+	fi
+	started_envs+=("$key ${envvars[*]}")
+
+	local code body
+	body=$(mktemp -t wporg-smoke)
+	code=$(curl -sS --max-time 30 -o "$body" -w '%{http_code}' "http://localhost:$port/" || echo 000)
+	if [[ $code =~ ^(2|3)[0-9][0-9]$ ]] && ! grep -qE 'Fatal error|Parse error|Uncaught ' "$body"; then
+		ok "smoke $code http://localhost:$port/"; event test-smoke ok "$pr" "$key"
+	else
+		warn "smoke $code http://localhost:$port/ $(grep -m1 -oE '(Fatal error|Parse error|Uncaught )[^<]{0,120}' "$body" || true)"
+		event test-smoke failed "$pr" "$key"; rc=1
+	fi
+	rm -f "$body"
+	return 0
+}
+
+stop_envs() {
+	local entry key vars
+	for entry in "${started_envs[@]+"${started_envs[@]}"}"; do
+		key=${entry%% *}; vars=${entry#"$key"}
+		# shellcheck disable=SC2086
+		(cd "$wt/environments" && env $vars npx wp-env --config "$key/.wp-env.test.json" stop >/dev/null 2>&1) || true
+	done
+}
+
+if [[ -n $list_only ]]; then
+	select_suites | awk -F'\x1f' '{printf "%-11s %-16s %s\n", $1, $2, $3}'
+	exit 0
+fi
+
+if [[ -n $tests ]]; then
+	selected=$(select_suites)
+	if [[ -z $selected ]]; then
+		log "No test suite covers the changed files."
+	else
+		while IFS=$'\x1f' read -r type key name script wd args bootstrap; do
+			case $type in
+				standalone) run_standalone "$key" "$name" "$wd" "$args" "$bootstrap" ;;
+				wordpress)  run_wordpress "$key" "$name" "$script" ;;
+			esac
+		done <<< "$selected"
+		[[ -n $keep ]] || stop_envs
+	fi
+fi
+
+event test "$([[ $rc == 0 ]] && echo ok || echo failed)" "$pr" "$branch"
+if [[ $rc == 0 ]]; then ok "All checks passed for $branch."; else warn "Checks failed for $branch; see above."; fi
+exit $rc

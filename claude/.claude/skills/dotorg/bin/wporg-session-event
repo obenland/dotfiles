@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#
+# wporg-session-event — Claude Code Stop hook: note the end of a session that
+# ran inside a wordpress.org checkout, so the event log shows sessions next to
+# pipeline steps. Reads the hook payload on stdin; always exits 0.
+#
+set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+payload=$(cat)
+cwd=$(jq -r '.cwd // empty' <<< "$payload")
+[[ -n $cwd ]] || exit 0
+top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || exit 0
+[[ -f $top/.github/unit-tests-suites.yml ]] || exit 0
+
+branch=$(git -C "$top" branch --show-current 2>/dev/null)
+session=$(jq -r '.session_id // empty' <<< "$payload")
+event session stop "" "$branch ${session:0:8}"
+exit 0

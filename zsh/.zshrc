@@ -34,3 +34,16 @@ case ":$PATH:" in
   *) export PATH="$PNPM_HOME:$PATH" ;;
 esac
 # pnpm end
+
+# dotorg pipeline (~/.claude/skills/dotorg)
+export PATH="$HOME/.claude/skills/dotorg/bin:$PATH"
+# Open a wordpress.org PR and start its review-and-test loop right away; the loop logs to ~/.cache/wporg-pipeline/run-<PR>.log.
+function wporg-pr() {
+	local url pr
+	url=$(gh pr create --repo WordPress/wordpress.org --base trunk "$@") || return $?
+	echo "$url"
+	pr=${url##*/}
+	[[ $pr == <-> ]] || return 0
+	wporg-pipeline run "$pr" > "$HOME/.cache/wporg-pipeline/run-$pr.log" 2>&1 &!
+	echo "wporg-pipeline run $pr started; log: ~/.cache/wporg-pipeline/run-$pr.log"
+}
