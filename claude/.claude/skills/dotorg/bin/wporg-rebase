@@ -107,7 +107,10 @@ session_settings() {
 	jq -nc --argjson allow "$rules" --arg w "$path" '{permissions: {defaultMode: "default", allow: $allow,
 		deny: ["Bash", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Agent",
 			"Edit(**/.git/**)", "Read(**/.git/**)", "Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.gnupg/**)", "Read(~/.netrc)",
-			"Read(~/.config/**)", "Read(~/.claude/**)", "Read(**/.env)", "Read(**/.env.*)", "Read(**/wp-config.php)"]}}'
+			"Read(~/.config/**)", "Read(~/.claude/**)", "Read(~/.git-credentials)", "Read(~/.npmrc)", "Read(~/.docker/**)",
+			"Read(~/.kube/**)", "Read(~/.pgpass)", "Read(~/.*_history)", "Read(~/.zsh_history)", "Read(~/.bash_history)",
+			"Read(//proc/**)", "Read(**/.env)", "Read(**/.env.*)", "Read(**/wp-config.php)", "Read(**/db-settings.php)",
+			"Grep(~/**)", "Glob(~/**)"]}}'
 }
 
 all_conflicted=""
@@ -203,7 +206,11 @@ while [[ -d $gitdir/rebase-merge || -d $gitdir/rebase-apply ]]; do
 	# The paths become permission patterns, so only plain path characters may reach them; and the settings
 	# must exist before the session does, since a session without them would run unrestricted.
 	while IFS= read -r f; do
-		[[ -z $f || ( $f =~ ^[A-Za-z0-9._/-]+$ && $f != *..* ) ]] || fail "unsafe conflicted path" "Conflicted path contains unsupported characters: $f."
+		[[ -z $f ]] && continue
+		[[ $f =~ ^[A-Za-z0-9._/-]+$ && $f != *..* ]] || fail "unsafe conflicted path" "Conflicted path contains unsupported characters: $f."
+		# An Edit rule names a path, not what it resolves to: a symlinked file or directory could point anywhere.
+		[[ -L $path/$f ]] && fail "symlinked conflict path" "Conflicted path is a symlink: $f."
+		[[ $(cd "$path" && pwd -P)/$f -ef $(cd "$path/$(dirname "$f")" && pwd -P)/$(basename "$f") ]] || fail "conflict path under a symlink" "Conflicted path sits under a symlinked directory: $f."
 	done <<< "$conflicted"
 	settings=$(session_settings "$conflicted") || settings=""
 	[[ -n $settings ]] && jq -e '.permissions.allow | length > 3' <<< "$settings" >/dev/null 2>&1 || fail "session settings" "Could not build the session's permission settings."
