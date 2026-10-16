@@ -21,11 +21,14 @@ LOCK_DIR="${WPORG_LOCK_DIR:-$HOME/.cache/wporg-pipeline/lock}"
 
 usage() {
 	cat <<USAGE
-Usage: wporg-pipeline run <PR> [--force] [--effort low|medium|high]
+Usage: wporg-pipeline run <PR> [--force] [--effort low|medium|high] [--rounds N] [--min-rounds N]
        wporg-pipeline sweep
        wporg-pipeline status [PR]
 
-run reviews a head once; --force reviews and tests it again. A fix commit stays in the worktree until you push it.
+run reviews a head once; --force reviews and tests it again. Round 1 reviews the PR at --effort
+(default high); each later round resumes the same sessions at medium effort and reviews only the fix
+commit, until a round changes nothing or --rounds (default 3) is reached. --min-rounds forces at
+least that many rounds, for exercising the loop. A fix commit stays in the worktree until you push it.
 USAGE
 	exit "${1:-0}"
 }
@@ -56,13 +59,15 @@ lock() {
 }
 
 cmd_run() {
-	local pr=${1:-} force="" effort="high"
+	local pr=${1:-} force="" effort="high" rounds=3 min_rounds=1
 	[[ $pr =~ ^[0-9]+$ ]] || usage 1
 	shift
 	while [[ $# -gt 0 ]]; do
 		case $1 in
-			--force)  force=1 ;;
-			--effort) effort=$2; shift ;;
+			--force)      force=1 ;;
+			--effort)     effort=$2; shift ;;
+			--rounds)     rounds=$2; shift ;;
+			--min-rounds) min_rounds=$2; shift ;;
 			*) usage 1 ;;
 		esac
 		shift
@@ -94,19 +99,38 @@ cmd_run() {
 		die "$path has uncommitted changes; commit or stash them, then rerun."
 	fi
 
-	# Review once per head.
+	# Review once per head, in rounds: round 1 sees the PR, later rounds see only the fix commit.
+	# The loop ends when a round leaves the worktree unchanged, or at the cap.
 	reviewed=$(state_get "$pr" reviewed_head)
 	if [[ $reviewed == "$head" && -z $force ]]; then
 		log "Head already reviewed; skipping review."
 	else
-		if "$BIN/wporg-review" "$pr" review --effort "$effort"; then
-			state_set "$pr" ".reviewed_head = \"$head\""
-		else
-			rc=1
-		fi
-		if [[ $rc == 0 ]] && ! "$BIN/wporg-review" "$pr" resolve; then
-			rc=1
-		fi
+		local round=1 before after round_effort rounds_run=0
+		while (( round <= rounds )); do
+			round_effort=$([[ $round == 1 ]] && echo "$effort" || echo medium)
+			# Later rounds review the fix commit; without one there is nothing to resume for.
+			if (( round > 1 )) && git -C "$path" diff --quiet "$head..HEAD"; then
+				log "Round $round: no fix commit; nothing left to review."
+				break
+			fi
+			before=$(git -C "$path" rev-parse HEAD)
+			if ! "$BIN/wporg-review" "$pr" review --round "$round" --effort "$round_effort" --base "$head"; then
+				rc=1; break
+			fi
+			if ! "$BIN/wporg-review" "$pr" resolve --round "$round" --effort "$round_effort" --base "$head"; then
+				rc=1; break
+			fi
+			rounds_run=$round
+			after=$(git -C "$path" rev-parse HEAD)
+			event pipeline round "$pr" "round $round $round_effort, $([[ $before == "$after" ]] && echo unchanged || echo changed)"
+			if [[ $before == "$after" && $round -ge $min_rounds ]]; then
+				log "Round $round changed nothing; review converged."
+				break
+			fi
+			(( round++ ))
+		done
+		(( round > rounds )) && warn "Review stopped at the round cap ($rounds); check the triage before pushing."
+		[[ $rc == 0 ]] && state_set "$pr" ".reviewed_head = \"$head\" | .rounds = $rounds_run"
 	fi
 
 	# Test the worktree as it stands, fix commit included.

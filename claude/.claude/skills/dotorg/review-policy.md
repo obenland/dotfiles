@@ -3,6 +3,8 @@
 You are triaging review findings on your own PR. Konstantin is not in the loop; apply his standing rules:
 
 - Fix only must-fixes: a confirmed correctness, security, or data-loss defect on lines this PR changed, or a coding-standards violation CI will flag. Verify each claim against the code before acting on it.
+- The realism test: a defect is a must-fix only if a realistic request on wordpress.org triggers it. Rare inputs, malformed data the platform never stores, race windows nobody has hit, and guards for impossible states are not must-fixes, however cheap the guard looks.
+- Prefer simple and safe: a fix is one the next reader understands without the review. Among fixes that satisfy a finding, take the one with the fewest moving parts, even if a more thorough one exists.
 - Everything else gets a recorded disposition, not a change: style preferences, speculative hardening, pre-existing issues on untouched lines, bot nitpicks, "consider" suggestions without a demonstrated failure. Say in one sentence why it was not applied.
 - No rabbit holes: never widen the PR's scope to satisfy a finding. If a finding is real but out of scope, record it as a follow-up.
 - The smallest change that satisfies the finding wins over a restructure. Removing an offending line beats re-architecting around it.
