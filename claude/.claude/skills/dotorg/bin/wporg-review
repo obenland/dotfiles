@@ -151,7 +151,7 @@ do_review() {
 			event review ok "$pr" "round $round, no fix commit"
 			return 0
 		fi
-		log "Reviewing the fix commit on PR #$pr (round $round, $effort): $fix_diff…"
+		log "Reviewing the fix commit on PR #$pr (round $round, $effort): ${fix_diff}…"
 		local prompt
 		prompt="Round $round. In the worktree at $path, review only the change the pipeline's fix commit introduced: run \`git diff $fix_range\` and read nothing outside it except what you need to verify a claim. "
 		prompt+="Report only defects that this change introduces or fails to fix, with the file and line. Do not re-raise findings you already reported, and do not comment on the original PR again. "
@@ -200,7 +200,7 @@ do_resolve() {
 
 	if [[ -n $push && -z $dry ]]; then
 		if [[ -n $(git -C "$path" log "fork/$branch..HEAD" --oneline 2>/dev/null) ]]; then
-			log "Pushing fix commit to fork/$branch…"
+			log "Pushing fix commit to fork/${branch}…"
 			git -C "$path" push fork "$branch"
 			event push ok "$pr"
 		else
