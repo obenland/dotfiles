@@ -93,16 +93,21 @@ commits_before=$(git -C "$path" rev-list --count "origin/trunk..$head")
 log "Rebasing $branch ($commits_before commits) onto origin/trunk…"
 event rebase start "$pr" "$branch from ${head:0:10}"
 
-# The session may read the tree and edit the conflicted files. No shell, no other paths.
+# The session may read the worktree and edit the conflicted files. No shell, nothing outside the worktree.
 session_settings() {
-	local f rules='["Read","Grep","Glob"]'
+	local f rules
+	# A single leading slash would mean "relative to the project root"; absolute paths take two.
+	rules=$(jq -nc --arg w "$path" '["Read(//\($w)/**)", "Grep(//\($w)/**)", "Glob(//\($w)/**)"]')
 	while IFS= read -r f; do
 		[[ -n $f ]] || continue
-		# A single leading slash would mean "relative to the project root"; absolute paths take two.
+		# The path becomes a permission pattern, so only plain path characters may reach it.
+		[[ $f =~ ^[A-Za-z0-9._/-]+$ && $f != *..* ]] || fail "unsafe conflicted path" "Conflicted path contains unsupported characters: $f."
 		rules=$(jq -c --arg p "Edit(//$path/$f)" '. + [$p]' <<< "$rules")
 	done <<< "$1"
-	jq -nc --argjson allow "$rules" '{permissions: {defaultMode: "default", allow: $allow,
-		deny: ["Bash", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "Edit(**/.git/**)"]}}'
+	jq -nc --argjson allow "$rules" --arg w "$path" '{permissions: {defaultMode: "default", allow: $allow,
+		deny: ["Bash", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Agent",
+			"Edit(**/.git/**)", "Read(**/.git/**)", "Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.gnupg/**)", "Read(~/.netrc)",
+			"Read(~/.config/**)", "Read(~/.claude/**)", "Read(**/.env)", "Read(**/.env.*)", "Read(**/wp-config.php)"]}}'
 }
 
 all_conflicted=""
