@@ -91,13 +91,19 @@ if [[ -n $merge ]]; then
 	fi
 	git -C "$mwt" merge --abort 2>/dev/null || true
 	git -C "$mwt" checkout -q --detach origin/trunk
-	if git -C "$mwt" merge -q --no-ff --no-edit -m "Test merge of $branch" "$branch_head" 2>/dev/null; then
+	# A throwaway merge commit needs no signature; a missing gpg must not look like a conflict.
+	if merge_out=$(git -C "$mwt" -c commit.gpgsign=false merge -q --no-ff --no-edit -m "Test merge of $branch" "$branch_head" 2>&1); then
 		log "Testing $branch merged into origin/trunk at $mwt"
 		wt=$mwt
+	elif git -C "$mwt" merge-tree --write-tree origin/trunk "$branch_head" >/dev/null 2>&1; then
+		git -C "$mwt" merge --abort 2>/dev/null || true
+		warn "Could not create the test merge of $branch: $(grep -m1 -E '^(fatal|error):' <<< "$merge_out")"
+		event test-merge failed "$pr" "merge commit failed"
+		rc=1; merge=""
 	else
 		git -C "$mwt" merge --abort 2>/dev/null || true
 		warn "$branch does not merge cleanly into origin/trunk; rebase it before CI can test it."
-		event test-merge failed "$pr" "$branch"
+		event test-merge failed "$pr" "$branch conflicts"
 		rc=1; merge=""
 	fi
 fi

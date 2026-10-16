@@ -19,7 +19,7 @@
 	<key>StartInterval</key><integer>1800</integer>
 	<key>EnvironmentVariables</key>
 	<dict>
-		<key>PATH</key><string>/Users/obenland/.local/bin:/Users/obenland/.nvm/versions/node/v24.21.0/bin:/opt/homebrew/opt/php@8.4/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>PATH</key><string>/Users/obenland/.local/bin:/Users/obenland/.nvm/versions/node/v24.21.0/bin:/opt/homebrew/opt/php@8.4/bin:/usr/local/MacGPG2/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
 	</dict>
 	<key>StandardOutPath</key><string>/Users/obenland/.cache/wporg-pipeline/sweep.log</string>
 	<key>StandardErrorPath</key><string>/Users/obenland/.cache/wporg-pipeline/sweep.log</string>
