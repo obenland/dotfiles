@@ -93,16 +93,18 @@ commits_before=$(git -C "$path" rev-list --count "origin/trunk..$head")
 log "Rebasing $branch ($commits_before commits) onto origin/trunk…"
 event rebase start "$pr" "$branch from ${head:0:10}"
 
-# The session may read the worktree and edit the conflicted files. No shell, nothing outside the worktree.
+# The session may edit only the conflicted files and has no shell. Reads cannot be confined to the worktree:
+# Read needs no rule in the default mode, and a deny on the home directory would deny the worktree too,
+# so the sensitive locations are denied by name instead.
 session_settings() {
 	local f rules
 	# A single leading slash would mean "relative to the project root"; absolute paths take two.
-	rules=$(jq -nc --arg w "$path" '["Read(//\($w)/**)", "Grep(//\($w)/**)", "Glob(//\($w)/**)"]')
+	rules=$(jq -nc --arg w "${path#/}" '["Read(//\($w)/**)", "Grep(//\($w)/**)", "Glob(//\($w)/**)"]')
 	while IFS= read -r f; do
 		[[ -n $f ]] || continue
 		# The path becomes a permission pattern, so only plain path characters may reach it.
 		[[ $f =~ ^[A-Za-z0-9._/-]+$ && $f != *..* ]] || fail "unsafe conflicted path" "Conflicted path contains unsupported characters: $f."
-		rules=$(jq -c --arg p "Edit(//$path/$f)" '. + [$p]' <<< "$rules")
+		rules=$(jq -c --arg p "Edit(//${path#/}/$f)" '. + [$p]' <<< "$rules")
 	done <<< "$1"
 	jq -nc --argjson allow "$rules" --arg w "$path" '{permissions: {defaultMode: "default", allow: $allow,
 		deny: ["Bash", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Agent",
