@@ -236,6 +236,13 @@ while [[ -d $gitdir/rebase-merge || -d $gitdir/rebase-apply ]]; do
 		if grep -qE '^(<<<<<<<|=======|>>>>>>>)( |$)' "$path/$f"; then
 			fail "markers left in $f" "Conflict markers remain in $f."
 		fi
+		# A resolution may only choose between the three sides of the conflict; a line that exists on none of them
+		# was written from somewhere else. Compared without surrounding whitespace.
+		foreign=$(comm -23 <(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' "$path/$f" | sort -u) \
+			<({ git -C "$path" show ":1:$f" 2>/dev/null; git -C "$path" show ":2:$f" 2>/dev/null; git -C "$path" show ":3:$f" 2>/dev/null; } | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | sort -u) | grep -v '^$' || true)
+		if [[ -n $foreign ]]; then
+			fail "foreign lines in $f" "The resolution of $f contains lines from none of the conflict's sides: $(head -3 <<< "$foreign" | cut -c1-80 | tr '\n' '|')"
+		fi
 		git -C "$path" add -- "$f"
 	done <<< "$stop_conflicted"
 	dbg "after add"
