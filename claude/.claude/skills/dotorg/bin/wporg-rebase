@@ -53,8 +53,8 @@ path=$(cd "$path" && pwd -P)
 gitdir=$(git -C "$path" rev-parse --path-format=absolute --git-dir)
 common=$(git -C "$path" rev-parse --path-format=absolute --git-common-dir)
 
-git -C "$path" fetch -q origin trunk
-git -C "$path" fetch -q fork "$branch" 2>/dev/null || true
+git_retry -C "$path" fetch -q origin trunk
+git_retry -C "$path" fetch -q fork "$branch" 2>/dev/null || true
 # Ignored entries count for the before/after comparison, not for the cleanliness check.
 tree_state() { git -C "$path" status --porcelain --ignored || true; }
 dirty() { git -C "$path" status --porcelain | grep -vE '^\?\? (vendor|environments/node_modules)$' || true; }

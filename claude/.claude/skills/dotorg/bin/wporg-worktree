@@ -53,10 +53,10 @@ cmd_new() {
 	existing=$(path_for_branch "$branch")
 	[[ -n $existing ]] && die "Branch $branch is already checked out at $existing."
 
-	git -C "$WPORG_REPO" fetch -q origin trunk
+	git_retry -C "$WPORG_REPO" fetch -q origin trunk
 	if git -C "$WPORG_REPO" show-ref -q --verify "refs/heads/$branch"; then
 		git -C "$WPORG_REPO" worktree add -q "$path" "$branch"
-	elif git -C "$WPORG_REPO" fetch -q fork "$branch" 2>/dev/null; then
+	elif git_retry -C "$WPORG_REPO" fetch -q fork "$branch" 2>/dev/null; then
 		git -C "$WPORG_REPO" worktree add -q --track -b "$branch" "$path" "fork/$branch"
 	else
 		git -C "$WPORG_REPO" worktree add -q -b "$branch" "$path" "$start"

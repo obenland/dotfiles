@@ -30,3 +30,13 @@ require() {
 		command -v "$c" >/dev/null 2>&1 || die "Required command not found: $c"
 	done
 }
+
+# git_retry <args...> — a git command that may contend for a shared ref lock when runs overlap; retried briefly.
+git_retry() {
+	local n
+	for n in 1 2 3 4 5; do
+		git "$@" 2>/dev/null && return 0
+		sleep $(( n * 2 ))
+	done
+	git "$@"
+}

@@ -77,7 +77,7 @@ wt=$(cd "$wt" && pwd -P)
 branch=$(git -C "$wt" branch --show-current)
 log "Worktree: $wt ($branch)"
 
-git -C "$wt" fetch -q origin trunk
+git_retry -C "$wt" fetch -q origin trunk
 rc=0
 
 # ── Merge into trunk, as CI does ────────────────────────────────────────────

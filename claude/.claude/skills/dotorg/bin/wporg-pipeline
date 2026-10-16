@@ -11,7 +11,9 @@
 #         and retry failed runs up to three times.
 # status: what the event log says, per PR.
 #
-# Runs are serialized through a lock, because the wp-env suites are heavy.
+# Each PR holds its own lock; a sweep runs every PR with a new head at once (WPORG_PARALLEL caps
+# that if the machine needs it), since every PR has its own worktree, wp-env instance, ports,
+# state, and sessions.
 # Scheduling the sweep is up to you; sweep.plist.example shows a launchd agent.
 #
 set -euo pipefail
@@ -20,7 +22,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$SKILL_DIR/bin"
 STATE_DIR="${WPORG_STATE_DIR:-$HOME/.cache/wporg-pipeline/state}"
-LOCK_DIR="${WPORG_LOCK_DIR:-$HOME/.cache/wporg-pipeline/lock}"
+LOCK_DIR="${WPORG_LOCK_DIR:-$HOME/.cache/wporg-pipeline/locks}"
+PARALLEL="${WPORG_PARALLEL:-0}"   # 0: no cap; every PR with a new head runs at once
+RUN_LOGS="$HOME/.cache/wporg-pipeline"
 
 usage() {
 	cat <<USAGE
@@ -54,16 +58,18 @@ state_set() {
 	mv "$tmp" "$f"
 }
 
+# lock <name> — one holder per name (a PR number, or "sweep"); a stale lock from a dead process is reclaimed.
 lock() {
-	mkdir -p "$(dirname "$LOCK_DIR")"
-	if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-		if [[ -f $LOCK_DIR/pid ]] && kill -0 "$(cat "$LOCK_DIR/pid")" 2>/dev/null; then
-			die "Another pipeline run holds the lock (pid $(cat "$LOCK_DIR/pid"))."
+	local d="$LOCK_DIR/$1"
+	mkdir -p "$LOCK_DIR"
+	if ! mkdir "$d" 2>/dev/null; then
+		if [[ -f $d/pid ]] && kill -0 "$(cat "$d/pid")" 2>/dev/null; then
+			die "Another run holds the lock for $1 (pid $(cat "$d/pid"))."
 		fi
-		rm -rf "$LOCK_DIR"; mkdir "$LOCK_DIR"
+		rm -rf "$d"; mkdir "$d"
 	fi
-	echo $$ > "$LOCK_DIR/pid"
-	trap 'rm -rf "$LOCK_DIR"' EXIT
+	echo $$ > "$d/pid"
+	trap 'rm -rf "'"$d"'"' EXIT
 }
 
 clean_tree() { [[ -z $(git -C "$1" status --porcelain | grep -vE '^\?\? (vendor|environments/node_modules)$') ]]; }
@@ -96,7 +102,7 @@ cmd_run() {
 		shift
 	done
 	[[ $rounds =~ ^[0-9]+$ && $min_rounds =~ ^[0-9]+$ ]] || usage 1
-	lock
+	lock "$pr"
 
 	local json head branch state draft path rc=0 reviewed transient=false
 	json=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefOid,headRefName,state,isDraft)
@@ -118,7 +124,7 @@ cmd_run() {
 	path=$("$BIN/wporg-worktree" path "$branch")
 	[[ -n $path ]] || path=$("$BIN/wporg-worktree" new "$branch")
 	# Fast-forward the worktree to the PR head. A local fix commit the PR has moved past is never discarded; the run just reports it.
-	git -C "$path" fetch -q fork "$branch" 2>/dev/null || true
+	git_retry -C "$path" fetch -q fork "$branch" 2>/dev/null || true
 	if ! git -C "$path" merge -q --ff-only "$head" 2>/dev/null; then
 		warn "$path is not at the PR head and cannot fast-forward; reconcile it by hand (unpushed fix commit?)."
 	fi
@@ -130,7 +136,7 @@ cmd_run() {
 	fi
 
 	# ── Rebase when the branch no longer merges into trunk ────────────────────
-	git -C "$path" fetch -q origin trunk
+	git_retry -C "$path" fetch -q origin trunk
 	if [[ $(git -C "$path" rev-parse HEAD) == "$head" ]] && ! git -C "$path" merge-tree --write-tree origin/trunk HEAD >/dev/null 2>&1; then
 		local new_head
 		if ! new_head=$("$BIN/wporg-rebase" "$pr" | tail -n 1); then
@@ -218,10 +224,11 @@ cmd_run() {
 }
 
 cmd_sweep() {
+	lock sweep
 	local list n head seen attempts rc=0
 	list=$(gh pr list --repo "$WPORG_GH_REPO" --author @me --state open --json number,headRefOid,isDraft --jq '.[] | select(.isDraft | not) | "\(.number) \(.headRefOid)"')
 	[[ -n $list ]] || { log "No open PRs."; return 0; }
-	local checked=0 new=0
+	local checked=0 new=0 queue=()
 	while read -r n head; do
 		[[ $n =~ ^[0-9]+$ && $head =~ ^[0-9a-f]{40}$ ]] || continue
 		checked=$(( checked + 1 ))
@@ -230,12 +237,28 @@ cmd_sweep() {
 			# Same head: retry once, and only a failure that can change without a push.
 			[[ $(state_get "$n" failed) == "true" && $(state_get "$n" transient) == "true" && $attempts -lt 2 ]] || continue
 		fi
-		new=$(( new + 1 ))
-		log "Sweep: PR #$n has a new head."
-		"$BIN/wporg-pipeline" run "$n" < /dev/null || rc=1
+		[[ -d $LOCK_DIR/$n ]] && kill -0 "$(cat "$LOCK_DIR/$n/pid" 2>/dev/null)" 2>/dev/null && continue
+		queue+=("$n")
 	done <<< "$list"
-	log "Sweep done at $(date -u +%Y-%m-%dT%H:%M:%SZ): $checked open PRs, $new with a new head."
-	event sweep "$([[ $rc == 0 ]] && echo ok || echo failed)" "" "$checked checked, $new new"
+	new=${#queue[@]}
+	# Up to PARALLEL runs at once, each logging to its own file; the sweep log keeps the verdict lines.
+	local -A pids=()
+	for n in "${queue[@]+"${queue[@]}"}"; do
+		while (( PARALLEL > 0 && $(jobs -rp | wc -l) >= PARALLEL )); do sleep 10; done
+		log "Sweep: PR #$n has a new head; starting (log: $RUN_LOGS/run-$n.log)."
+		"$BIN/wporg-pipeline" run "$n" < /dev/null > "$RUN_LOGS/run-$n.log" 2>&1 &
+		pids[$!]=$n
+	done
+	local pid
+	for pid in "${!pids[@]}"; do
+		if wait "$pid"; then
+			log "PR #${pids[$pid]}: $(jq -r '.verdict // "done"' "$STATE_DIR/${pids[$pid]}.json" 2>/dev/null)"
+		else
+			rc=1; log "PR #${pids[$pid]}: $(jq -r '.verdict // "failed"' "$STATE_DIR/${pids[$pid]}.json" 2>/dev/null)"
+		fi
+	done
+	log "Sweep done at $(date -u +%Y-%m-%dT%H:%M:%SZ): $checked open PRs, $new run in parallel."
+	event sweep "$([[ $rc == 0 ]] && echo ok || echo failed)" "" "$checked checked, $new run"
 	return $rc
 }
 
