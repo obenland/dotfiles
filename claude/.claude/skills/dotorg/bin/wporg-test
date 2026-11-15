@@ -2,16 +2,24 @@
 #
 # wporg-test — run the checks CI runs, locally, against a PR's worktree.
 #
-# 0. Like CI, test the branch merged into trunk: a sibling <worktree>-merge
-#    checkout is reset to origin/trunk and the branch merged in, so trunk's
-#    suites and tests apply even to a branch that predates them. A merge
-#    conflict is reported as the finding it is. --no-merge tests the branch as is.
-# 1. phpcs on the branch, with the same script the PHPCS workflow uses.
-# 2. The PHPUnit suites whose paths the branch touches, chosen from
-#    .github/unit-tests-suites.yml exactly as the Unit Tests workflow does:
-#    standalone suites through vendor/bin/phpunit, WordPress suites through
-#    their wp-env environment, which has its own database and cache.
-# 3. A smoke request against each started environment's front page.
+# 0. Like CI, test the branch merged into the default branch: a sibling
+#    <worktree>-merge checkout is reset to origin/<default branch> and the
+#    branch merged in, so the default branch's suites and tests apply even to a
+#    branch that predates them. A merge conflict is reported as the finding it
+#    is. --no-merge tests the branch as is.
+# 1. wordpress.org: phpcs on the branch and the PHPUnit suites whose paths it
+#    touches, selected by the wporg-bug-pipeline's bin/wordpress-org-checks.sh
+#    exactly as CI does: standalone suites through vendor/bin/phpunit,
+#    WordPress suites through their wp-env environment, then a smoke request
+#    against each started environment's front page.
+#    Every other repo: the checks in its repos.json profile, through that
+#    checkout's bin/check.
+#
+# Someone else's PR runs its code here, so it needs --trust, and --trust-config
+# as well when it changes CI, test or dependency configuration. Its worktree
+# never shares the main checkout's dependencies: unchanged ones are cloned from
+# it (copy on write), changed ones installed from the PR's lock files.
+# Exit 3 means a gate stopped the run before anything ran.
 #
 # Nothing here touches the dotorg sandbox.
 #
@@ -22,176 +30,146 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
 	cat <<USAGE
-Usage: wporg-test [<PR>|<branch>|<path>] [options]
+Usage: wporg-test [--repo <name>] [<PR>|<branch>|<path>] [options]
 
-  Target defaults to the current directory when it is a wordpress.org checkout.
+  Target defaults to the current directory when it is a checkout of the repo.
+  --repo defaults to the current directory's repo, then wordpress.org.
 
 Options:
-  --suite <key>   Run only this suite from .github/unit-tests-suites.yml (repeatable).
-  --all           Run every suite, not just the ones the branch touches.
-  --no-lint       Skip phpcs.
-  --no-tests      Skip PHPUnit.
+  --suite <key>   wordpress.org: run only this suite from .github/unit-tests-suites.yml (repeatable).
+  --all           wordpress.org: run every suite, not just the ones the branch touches.
+  --no-lint       wordpress.org: skip phpcs.
+  --no-tests      wordpress.org: skip PHPUnit.
   --keep          Leave wp-env environments running afterwards.
-  --list          Print the suites the branch would run, then exit.
-  --no-merge      Test the branch as it is instead of merged into origin/trunk.
+  --list          Print what would run, then exit.
+  --no-merge      Test the branch as it is instead of merged into the default branch.
+  --trust         Someone else's PR: run its code. Read the diff first.
+  --trust-config  Someone else's PR that changes CI, test, or dependency configuration: run that too.
 USAGE
 	exit "${1:-0}"
 }
 
-require git gh php npm curl python3
+require git gh jq curl python3
 
-target=""; suites=(); all=""; lint=1; tests=1; keep=""; list_only=""; merge=1
+{ read -r repo_name; mapfile -t args; } < <(repo_arg "$@")
+set -- "${args[@]+"${args[@]}"}"
+use_repo "$repo_name"
+
+target=""; suites=(); all=""; lint=1; tests=1; keep=""; list_only=""; merge=1; trusted=""; trusted_config=""
 while [[ $# -gt 0 ]]; do
 	case $1 in
-		--suite)    suites+=("$2"); shift ;;
-		--all)      all=1 ;;
-		--no-lint)  lint="" ;;
-		--no-tests) tests="" ;;
-		--keep)     keep=1 ;;
-		--list)     list_only=1 ;;
-		--no-merge) merge="" ;;
-		-h|--help)  usage ;;
-		-*)         usage 1 ;;
-		*)          target=$1 ;;
+		--suite)        suites+=("$2"); shift ;;
+		--all)          all=1 ;;
+		--no-lint)      lint="" ;;
+		--no-tests)     tests="" ;;
+		--keep)         keep=1 ;;
+		--list)         list_only=1 ;;
+		--no-merge)     merge="" ;;
+		--trust)        trusted=1 ;;
+		--trust-config) trusted_config=1 ;;
+		-h|--help)      usage ;;
+		-*)             usage 1 ;;
+		*)              target=$1 ;;
 	esac
 	shift
 done
+if [[ $WPORG_REPO_NAME != wordpress.org && ( ${#suites[@]} -gt 0 || -n $all || -z $lint || -z $tests ) ]]; then
+	die "--suite, --all, --no-lint and --no-tests are for wordpress.org; $WPORG_REPO_NAME runs its profile's checks."
+fi
 
 # ── Resolve the worktree ────────────────────────────────────────────────────
-pr=""
+pr=""; trust=""
 if [[ -z $target ]]; then
 	wt=$(git rev-parse --show-toplevel 2>/dev/null || true)
-	[[ -n $wt && -f $wt/.github/unit-tests-suites.yml ]] || die "Not inside a wordpress.org checkout; pass a PR, branch, or path."
+	[[ -n $wt && $(repo_of_dir "$wt") == "$WPORG_REPO_NAME" ]] || die "Not inside a $WPORG_REPO_NAME checkout; pass a PR, branch, or path."
 elif [[ $target =~ ^[0-9]+$ ]]; then
 	pr=$target
-	wt=$("$SKILL_DIR/bin/wporg-worktree" pr "$pr")
-	wt=$(cut -f2 <<< "$wt")
+	IFS=$'\t' read -r _ wt _ _ trust <<< "$("$SKILL_DIR/bin/wporg-worktree" --repo "$WPORG_REPO_NAME" pr "$pr")"
 elif [[ -d $target ]]; then
 	wt=$(cd "$target" && git rev-parse --show-toplevel)
 else
-	wt=$("$SKILL_DIR/bin/wporg-worktree" path "$target")
-	[[ -n $wt ]] || die "No worktree for branch $target. Create one: wporg-worktree new $target"
+	wt=$("$SKILL_DIR/bin/wporg-worktree" --repo "$WPORG_REPO_NAME" path "$target")
+	[[ -n $wt ]] || die "No worktree for branch $target. Create one: wporg-worktree --repo $WPORG_REPO_NAME new $target"
 fi
 wt=$(cd "$wt" && pwd -P)
+[[ -n $trust ]] || trust=$(trust_of "$wt")
 branch=$(git -C "$wt" branch --show-current)
-log "Worktree: $wt ($branch)"
+log "Worktree: $wt ($branch, $([[ $trust == own ]] && echo yours || echo "someone else's"))"
 
-git_retry -C "$wt" fetch -q origin trunk
+git_retry -C "$wt" fetch -q origin "$WPORG_BRANCH"
+
+# ── Gates for someone else's code ───────────────────────────────────────────
+if [[ $trust != own && -z $list_only ]]; then
+	if [[ -z $trusted ]]; then
+		event test gated "$pr" "$branch: needs --trust"
+		warn "$branch is someone else's PR; testing runs its code. Read the diff, then rerun with --trust."
+		exit 3
+	fi
+	tooling=$(tooling_changes "$wt")
+	if [[ -n $tooling && -z $trusted_config ]]; then
+		event test gated "$pr" "$branch: needs --trust-config"
+		warn "$branch changes configuration that installs and checks run: $(tr '\n' ' ' <<< "$tooling")Read those files, then rerun with --trust --trust-config."
+		exit 3
+	fi
+fi
+
+# Someone else's worktree gets its own copy of each dependency: a clone of the main checkout's when the manifest
+# and lock match the default branch, else a fresh install from the PR's own.
+own_deps() {
+	local entry dir manifest lock cmd
+	for entry in "${WPORG_LINKS[@]+"${WPORG_LINKS[@]}"}"; do
+		[[ -e $wt/$entry ]] && continue
+		dir=$(dirname "$entry")
+		case $(basename "$entry") in
+			vendor)       manifest=composer.json; lock=composer.lock; cmd="composer install --no-interaction --no-progress" ;;
+			node_modules) manifest=package.json; lock=package-lock.json; cmd="npm ci --no-audit --no-fund" ;;
+			*)            warn "No install rule for $entry; the checks that need it will fail."; continue ;;
+		esac
+		if [[ -d $WPORG_REPO/$entry ]] && git -C "$wt" diff --quiet "origin/$WPORG_BRANCH...HEAD" -- "$dir/$manifest" "$dir/$lock"; then
+			log "Cloning $entry from the main checkout (copy on write)…"
+			cp -cR "$WPORG_REPO/$entry" "$wt/$entry"
+		else
+			log "Installing $entry: $cmd (in ${dir})…"
+			(cd "$wt/$dir" && $cmd < /dev/null) || { warn "Installing $entry failed."; rc=1; }
+		fi
+	done
+}
+
 rc=0
+[[ $trust == own || -n $list_only ]] || own_deps
 
-# ── Merge into trunk, as CI does ────────────────────────────────────────────
+# ── Merge into the default branch, as CI does ───────────────────────────────
 if [[ -n $merge ]]; then
 	branch_head=$(git -C "$wt" rev-parse HEAD)
 	mwt="$wt-merge"
 	if [[ ! -d $mwt ]]; then
-		git -C "$WPORG_REPO" worktree add -q --detach "$mwt" origin/trunk
-		[[ -d $WPORG_REPO/vendor ]] && ln -sfn "$WPORG_REPO/vendor" "$mwt/vendor"
-		[[ -d $WPORG_REPO/environments/node_modules ]] && ln -sfn "$WPORG_REPO/environments/node_modules" "$mwt/environments/node_modules"
+		git -C "$WPORG_REPO" worktree add -q --detach "$mwt" "origin/$WPORG_BRANCH"
 	fi
 	git -C "$mwt" merge --abort 2>/dev/null || true
-	git -C "$mwt" checkout -q --detach origin/trunk
+	git -C "$mwt" checkout -q --detach "origin/$WPORG_BRANCH"
+	# The merge checkout uses the worktree's dependencies: the main checkout's links for your PRs, its own copies otherwise.
+	for entry in "${WPORG_LINKS[@]+"${WPORG_LINKS[@]}"}"; do
+		if [[ -e $wt/$entry && -d $(dirname "$mwt/$entry") ]]; then ln -sfn "$wt/$entry" "$mwt/$entry"; fi
+	done
 	# A throwaway merge commit needs no signature; a missing gpg must not look like a conflict.
 	if merge_out=$(git -C "$mwt" -c commit.gpgsign=false merge -q --no-ff --no-edit -m "Test merge of $branch" "$branch_head" 2>&1); then
-		log "Testing $branch merged into origin/trunk at $mwt"
+		log "Testing $branch merged into origin/$WPORG_BRANCH at $mwt"
 		wt=$mwt
-	elif git -C "$mwt" merge-tree --write-tree origin/trunk "$branch_head" >/dev/null 2>&1; then
+	elif git -C "$mwt" merge-tree --write-tree "origin/$WPORG_BRANCH" "$branch_head" >/dev/null 2>&1; then
 		git -C "$mwt" merge --abort 2>/dev/null || true
 		warn "Could not create the test merge of $branch: $(grep -m1 -E '^(fatal|error):' <<< "$merge_out")"
 		event test-merge failed "$pr" "merge commit failed"
 		rc=1; merge=""
 	else
 		git -C "$mwt" merge --abort 2>/dev/null || true
-		warn "$branch does not merge cleanly into origin/trunk; rebase it before CI can test it."
+		warn "$branch does not merge cleanly into origin/$WPORG_BRANCH; rebase it before CI can test it."
 		event test-merge failed "$pr" "$branch conflicts"
 		rc=1; merge=""
 	fi
 fi
 
-changed=$(git -C "$wt" diff --name-only origin/trunk...HEAD)
-[[ -n $changed ]] || warn "No files differ from origin/trunk."
-
-if [[ -n $list_only ]]; then
-	lint=""; tests=""
-fi
-event test start "$pr" "$branch"
-
-# ── phpcs ───────────────────────────────────────────────────────────────────
-if [[ -n $lint ]]; then
-	log "phpcs on changed PHP files…"
-	# The CI script only takes a name under remotes/origin/; point one at the merge-base so trunk's own changes
-	# don't count. Refs are shared by every worktree, so the name carries this run's pid: concurrent runs must not collide.
-	base_ref="wporg-test-base-$$"
-	git -C "$wt" update-ref "refs/remotes/origin/$base_ref" "$(git -C "$wt" merge-base origin/trunk HEAD)"
-	trap 'git -C "$wt" update-ref -d "refs/remotes/origin/$base_ref" 2>/dev/null' EXIT
-	if (cd "$wt" && BASE_REF=$base_ref php .github/bin/phpcs-branch.php < /dev/null); then
-		ok "phpcs clean"; event test-phpcs ok "$pr"
-	else
-		warn "phpcs reported violations"; event test-phpcs failed "$pr"; rc=1
-	fi
-	git -C "$wt" update-ref -d "refs/remotes/origin/$base_ref"
-fi
-
-# ── Suite selection ─────────────────────────────────────────────────────────
-# Mirrors the workflow's `changes` job: suite paths + shared paths for the type +
-# the plugins a WordPress suite's environment activates.
-select_suites() {
-	CHANGED="$changed" python3 -I - "$wt" "$all" "${suites[@]+"${suites[@]}"}" <<'PY'
-import sys, json, re, fnmatch, os
-wt, all_flag, *only = sys.argv[1:]
-changed = [l for l in os.environ.get('CHANGED', '').splitlines() if l]
-
-# A dedicated parser for this file's shape: two map levels, lists of quoted scalars, comments.
-def parse_suites_file(text):
-    shared = {}; suites = {}; section = None; cur = None; curkey = None; listkey = None
-    for raw in text.splitlines():
-        if raw.lstrip().startswith('#') or not raw.strip(): continue
-        line = re.sub(r'\s+#.*$', '', raw.rstrip())
-        indent = len(line) - len(line.lstrip()); body = line.strip()
-        if indent == 0:
-            section = body.rstrip(':'); continue
-        if section == 'shared-paths':
-            if indent == 2: curkey = body.rstrip(':'); shared[curkey] = []
-            elif body.startswith('- '): shared[curkey].append(body[2:].strip("'\""))
-        elif section == 'suites':
-            if indent == 2: curkey = body.rstrip(':'); suites[curkey] = {}; listkey = None
-            elif indent == 4:
-                k, _, v = body.partition(':'); v = v.strip().strip("'\"")
-                if v == '': suites[curkey][k] = []; listkey = k
-                else: suites[curkey][k] = v
-            elif body.startswith('- ') and listkey: suites[curkey][listkey].append(body[2:].strip("'\""))
-    return shared, suites
-
-# CI tests the branch merged with trunk, so a branch older than the suite definitions still gets trunk's.
-import subprocess
-suites_path = os.path.join(wt, '.github/unit-tests-suites.yml')
-if os.path.exists(suites_path):
-    suites_text = open(suites_path).read()
-else:
-    suites_text = subprocess.run(['git', '-C', wt, 'show', 'origin/trunk:.github/unit-tests-suites.yml'], capture_output=True, text=True, check=True).stdout
-shared, suites = parse_suites_file(suites_text)
-
-def matches(path, pattern):
-    # dorny/paths-filter globs: ** spans directories; fnmatch's * also spans '/', which is what we want for '**'.
-    return fnmatch.fnmatch(path, pattern.replace('**', '*'))
-
-for key, s in suites.items():
-    if only and key not in only: continue
-    paths = list(shared.get(s['type'], [])) + list(s.get('paths', []))
-    if s['type'] == 'wordpress':
-        cfg = os.path.join(wt, 'environments', key, '.wp-env.test.json')
-        try:
-            cfg_text = open(cfg).read()
-        except FileNotFoundError:
-            r = subprocess.run(['git', '-C', wt, 'show', f'origin/trunk:environments/{key}/.wp-env.test.json'], capture_output=True, text=True)
-            cfg_text = r.stdout if r.returncode == 0 else '{}'
-        for p in json.loads(cfg_text or '{}').get('plugins', []):
-            if p.startswith('../'): paths.append(p[3:] + '/**')
-    hit = all_flag or bool(only) or any(matches(c, p) for c in changed for p in paths)
-    if hit:
-        # Unit separator: bash collapses runs of tabs, which would shift empty fields.
-        print('\x1f'.join([s['type'], key, s.get('name', key), s.get('script', ''), s.get('working-directory', ''), s.get('phpunit-args', ''), s.get('bootstrap', '')]))
-PY
-}
+changed=$(git -C "$wt" diff --name-only "origin/$WPORG_BRANCH...HEAD")
+[[ -n $changed ]] || warn "No files differ from origin/$WPORG_BRANCH."
 
 # Dedicated ports per worktree and suite keep test environments off the dev environments' 8888/8889.
 pick_ports() {
@@ -203,6 +181,56 @@ pick_ports() {
 	done
 	echo "$port $tests_port"
 }
+
+finish() {
+	event test "$([[ $rc == 0 ]] && echo ok || echo failed)" "$pr" "$branch"
+	if [[ $rc == 0 && ${skipped:-0} == 0 ]]; then ok "All checks passed for $branch."
+	elif [[ $rc == 0 ]]; then warn "Checks passed for $branch, but $skipped suite(s) could not run on this branch."
+	else warn "Checks failed for $branch; see above."; fi
+	exit $rc
+}
+
+# ── Every repo but wordpress.org: the profile's checks ──────────────────────
+if [[ $WPORG_REPO_NAME != wordpress.org ]]; then
+	if [[ -n $list_only ]]; then
+		jq -r --arg r "$WPORG_REPO_NAME" '.repos[$r].checks // [] | .[] | "\(.name)\t\(.run)"' "$(pipeline_file repos.json)"
+		exit 0
+	fi
+	check=$(pipeline_file bin/check)
+	event test start "$pr" "$branch"
+	read -r port tests_port <<< "$(pick_ports "$WPORG_REPO_NAME")"
+	log "Profile checks for $WPORG_REPO_NAME (wp-env ports $port/$tests_port)…"
+	if WP_ENV_PORT=$port WP_ENV_TESTS_PORT=$tests_port "$check" "$WPORG_REPO_NAME" "$wt"; then
+		event test-checks ok "$pr"
+	else
+		event test-checks failed "$pr"; rc=1
+	fi
+	if [[ -z $keep && -f $wt/.wp-env.json && -d $wt/node_modules ]]; then
+		(cd "$wt" && WP_ENV_PORT=$port WP_ENV_TESTS_PORT=$tests_port npx wp-env stop >/dev/null 2>&1) || true
+	fi
+	finish
+fi
+
+# ── wordpress.org: phpcs and the suites CI selects ──────────────────────────
+require php npm
+checks_lib=$(pipeline_file bin/wordpress-org-checks.sh)
+# shellcheck source=/dev/null
+source "$checks_lib"
+
+if [[ -n $list_only ]]; then
+	wporg_select_suites "$wt" "$changed" "$all" "${suites[@]+"${suites[@]}"}" | awk -F'\x1f' '{printf "%-11s %-16s %s\n", $1, $2, $3}'
+	exit 0
+fi
+event test start "$pr" "$branch"
+
+if [[ -n $lint ]]; then
+	log "phpcs on changed PHP files…"
+	if wporg_phpcs "$wt"; then
+		ok "phpcs clean"; event test-phpcs ok "$pr"
+	else
+		warn "phpcs reported violations"; event test-phpcs failed "$pr"; rc=1
+	fi
+fi
 
 run_standalone() {
 	local key=$1 name=$2 wd=$3 args=$4 bootstrap=$5 stub=""
@@ -272,13 +300,8 @@ stop_envs() {
 	done
 }
 
-if [[ -n $list_only ]]; then
-	select_suites | awk -F'\x1f' '{printf "%-11s %-16s %s\n", $1, $2, $3}'
-	exit 0
-fi
-
 if [[ -n $tests ]]; then
-	selected=$(select_suites)
+	selected=$(wporg_select_suites "$wt" "$changed" "$all" "${suites[@]+"${suites[@]}"}")
 	if [[ -z $selected ]]; then
 		log "No test suite covers the changed files."
 	else
@@ -292,8 +315,4 @@ if [[ -n $tests ]]; then
 	fi
 fi
 
-event test "$([[ $rc == 0 ]] && echo ok || echo failed)" "$pr" "$branch"
-if [[ $rc == 0 && $skipped == 0 ]]; then ok "All checks passed for $branch."
-elif [[ $rc == 0 ]]; then warn "Checks passed for $branch, but $skipped suite(s) could not run on this branch."
-else warn "Checks failed for $branch; see above."; fi
-exit $rc
+finish

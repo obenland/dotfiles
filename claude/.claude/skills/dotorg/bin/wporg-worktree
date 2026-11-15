@@ -1,30 +1,34 @@
 #!/usr/bin/env bash
 #
-# wporg-worktree — create, list and remove sibling worktrees of the wordpress.org checkout.
+# wporg-worktree — create, list and remove sibling worktrees of a profiled repo's checkout (default: wordpress.org).
 #
-# Worktrees live next to the main checkout as <checkout>-<branch-slug>, the
-# layout already in use. Each new worktree gets vendor/ and
-# environments/node_modules linked from the main checkout so phpcs and wp-env
-# work there without a second install.
+# Worktrees live next to the main checkout as <repo>-<branch-slug>, the
+# layout already in use. Each new worktree gets the profile's dependency
+# links (for wordpress.org, vendor/ and environments/node_modules) from the
+# main checkout, so phpcs and wp-env work there without a second install.
 #
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 usage() {
 	cat <<USAGE
-Usage: wporg-worktree new <branch> [<start-point>]   Create ../<checkout>-<slug> on <branch> (default start: origin/trunk).
-       wporg-worktree pr <PR>                         Print "<branch>\t<path>\t<remote>\t<head ref>" for a PR, creating its worktree if needed.
+Usage: wporg-worktree new <branch> [<start-point>]   Create ../<repo>-<slug> on <branch> (default start: origin/<default branch>).
+       wporg-worktree pr <PR>                         Print "<branch>\t<path>\t<remote>\t<head ref>\t<own|other>" for a PR, creating its worktree if needed.
        wporg-worktree rm <branch|path> [--force]     Remove the worktree; delete the branch when its PR is closed.
        wporg-worktree ls                              List worktrees with dirty-file counts and PR state.
        wporg-worktree path <branch>                   Print the worktree path for a branch.
 
-WPORG_REPO overrides the main checkout (default: $WPORG_REPO).
+Every command takes --repo <name>: a repo profiled in \$WPORG_PIPELINE_DIR/repos.json, checked out at
+\$WPORG_CODE_DIR/<name>. Default: the current directory's repo, then wordpress.org.
 USAGE
 	exit "${1:-0}"
 }
 
 require git gh jq
 
+{ read -r repo_name; mapfile -t args; } < <(repo_arg "$@")
+set -- "${args[@]+"${args[@]}"}"
+use_repo "$repo_name"
 parent=$(dirname "$WPORG_REPO")
 base=$(basename "$WPORG_REPO")
 
@@ -35,9 +39,9 @@ path_for_branch() {
 		/^worktree /{p=substr($0,10)} /^branch /{if ($2==b) print p}'
 }
 
-# The vendor and node_modules links are ours, not the branch's; a trailing-slash ignore pattern does not match a symlink.
+# The dependency links are ours, not the branch's; a trailing-slash ignore pattern does not match a symlink.
 dirty_entries() {
-	git -C "$1" status --porcelain | grep -vE '^\?\? (vendor|environments/node_modules)$' || true
+	git -C "$1" status --porcelain | untracked_links
 }
 
 pr_state() {
@@ -54,12 +58,10 @@ link_deps() {
 	# Exclude the links in the shared info/exclude so `git add -A` can't commit them.
 	local exclude entry
 	exclude="$(git -C "$WPORG_REPO" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
-	for entry in /vendor /environments/node_modules; do
-		grep -qxF "$entry" "$exclude" 2>/dev/null || echo "$entry" >> "$exclude"
+	for entry in "${WPORG_LINKS[@]+"${WPORG_LINKS[@]}"}"; do
+		grep -qxF "/$entry" "$exclude" 2>/dev/null || echo "/$entry" >> "$exclude"
+		if [[ -d $WPORG_REPO/$entry && ! -e $1/$entry && -d $(dirname "$1/$entry") ]]; then ln -s "$WPORG_REPO/$entry" "$1/$entry"; fi
 	done
-
-	if [[ -d $WPORG_REPO/vendor ]]; then ln -s "$WPORG_REPO/vendor" "$1/vendor"; fi
-	if [[ -d $WPORG_REPO/environments/node_modules ]]; then ln -s "$WPORG_REPO/environments/node_modules" "$1/environments/node_modules"; fi
 }
 
 lower() { tr '[:upper:]' '[:lower:]' <<< "$1"; }
@@ -78,7 +80,7 @@ remote_for() {
 }
 
 cmd_new() {
-	local branch=${1:-} start=${2:-origin/trunk}
+	local branch=${1:-} start=${2:-origin/$WPORG_BRANCH}
 	[[ -n $branch ]] || usage 1
 	local path="$parent/$base-$(slug_for "$branch")"
 	[[ -e $path ]] && die "$path already exists."
@@ -86,42 +88,50 @@ cmd_new() {
 	existing=$(path_for_branch "$branch")
 	[[ -n $existing ]] && die "Branch $branch is already checked out at $existing."
 
-	git_retry -C "$WPORG_REPO" fetch -q origin trunk
+	git_retry -C "$WPORG_REPO" fetch -q origin "$WPORG_BRANCH"
 	if git -C "$WPORG_REPO" show-ref -q --verify "refs/heads/$branch"; then
 		git -C "$WPORG_REPO" worktree add -q "$path" "$branch"
-	elif git_retry -C "$WPORG_REPO" fetch -q fork "$branch" 2>/dev/null; then
-		git -C "$WPORG_REPO" worktree add -q --track -b "$branch" "$path" "fork/$branch"
+	elif git_retry -C "$WPORG_REPO" fetch -q "$WPORG_PUSH_REMOTE" "$branch" 2>/dev/null; then
+		git -C "$WPORG_REPO" worktree add -q --track -b "$branch" "$path" "$WPORG_PUSH_REMOTE/$branch"
 	else
 		git -C "$WPORG_REPO" worktree add -q -b "$branch" "$path" "$start"
 	fi
 
-	# PR heads live on the fork; make a bare `git push` go there.
-	git -C "$path" config "branch.$branch.remote" fork
+	# PR heads live on the push remote (the fork for wordpress.org); make a bare `git push` go there.
+	git -C "$path" config "branch.$branch.remote" "$WPORG_PUSH_REMOTE"
 	git -C "$path" config "branch.$branch.merge" "refs/heads/$branch"
 	git -C "$path" config push.autoSetupRemote true
-	link_deps "$path"
+	[[ -n ${SKIP_LINKS:-} ]] || link_deps "$path"
 
 	event worktree created "" "$branch"
 	echo "$path"
 }
 
-# A PR from your fork is worked on under its own branch name. Anyone else's is checked out as pr-<N> at its head, since
-# their branch name (patch-1, trunk) says nothing about which local branch holds it.
+# A PR whose branch is on the repo's push remote (your fork for wordpress.org, origin elsewhere) is worked on under its
+# own branch name. Anyone else's is checked out as pr-<N> at its head, since their branch name (patch-1, trunk) says
+# nothing about which local branch holds it.
+# The last field says whether the PR is yours: its branch is on your fork, or on origin with you as the author. Code from
+# anyone else's PR never gets the main checkout's dependency links, since its install scripts could write through them.
 cmd_pr() {
 	local pr=${1:-}
 	[[ $pr =~ ^[0-9]+$ ]] || usage 1
-	local json ref oid owner repo branch remote path
-	json=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefName,headRefOid,headRepository,headRepositoryOwner)
+	local json ref oid owner repo author me branch remote path trust=other
+	json=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefName,headRefOid,headRepository,headRepositoryOwner,author)
 	ref=$(jq -r .headRefName <<< "$json"); oid=$(jq -r .headRefOid <<< "$json")
 	owner=$(jq -r '.headRepositoryOwner.login // empty' <<< "$json"); repo=$(jq -r '.headRepository.name // empty' <<< "$json")
+	author=$(jq -r '.author.login // empty' <<< "$json")
 	[[ $ref =~ ^[A-Za-z0-9._/-]+$ && $oid =~ ^[0-9a-f]{40}$ ]] || die "Unexpected head for PR #$pr."
 	[[ $owner =~ ^[A-Za-z0-9-]+$ && $repo =~ ^[A-Za-z0-9._-]+$ ]] || die "PR #$pr's head repository no longer exists."
 
 	remote=$(remote_for "$owner" "$repo")
-	if [[ $remote == fork ]]; then
+	me=$(gh api user --jq .login)
+	if [[ $remote == fork && $(lower "$owner") == "$(lower "$me")" ]] || [[ $remote == origin && $(lower "$owner") == wordpress && $author == "$me" ]]; then
+		trust=own
+	fi
+	if [[ $remote == "$WPORG_PUSH_REMOTE" && ( $trust == own || $remote == origin ) ]]; then
 		branch=$ref
 		path=$(path_for_branch "$branch")
-		[[ -n $path ]] || path=$(cmd_new "$branch")
+		[[ -n $path ]] || path=$(SKIP_LINKS=$([[ $trust == own ]] || echo 1) cmd_new "$branch")
 	else
 		branch=pr-$pr
 		path=$(path_for_branch "$branch")
@@ -136,11 +146,20 @@ cmd_pr() {
 			fi
 			git -C "$path" config "branch.$branch.remote" "$remote"
 			git -C "$path" config "branch.$branch.merge" "refs/heads/$ref"
-			link_deps "$path"
+			[[ $trust == own ]] && link_deps "$path"
 			event worktree created "$pr" "$branch"
 		fi
 	fi
-	printf '%s\t%s\t%s\t%s\n' "$branch" "$path" "$remote" "$ref"
+	# wporg-test and the review sessions read this back when they are given only the worktree.
+	git -C "$WPORG_REPO" config "branch.$branch.wporgTrust" "$trust"
+	# A worktree from before this rule may still carry the links; they are ours to remove.
+	if [[ $trust != own ]]; then
+		local entry
+		for entry in "${WPORG_LINKS[@]+"${WPORG_LINKS[@]}"}"; do
+			if [[ -L $path/$entry && $(readlink "$path/$entry") == "$WPORG_REPO/$entry" ]]; then rm -f "$path/$entry"; fi
+		done
+	fi
+	printf '%s\t%s\t%s\t%s\t%s\n' "$branch" "$path" "$remote" "$ref" "$trust"
 }
 
 cmd_rm() {
@@ -159,11 +178,14 @@ cmd_rm() {
 	if [[ -n $(dirty_entries "$path") && $force != "--force" ]]; then
 		die "$path has uncommitted changes. Pass --force to discard them."
 	fi
-	rm -f "$path/vendor" "$path/environments/node_modules"
+	local entry
+	for entry in "${WPORG_LINKS[@]+"${WPORG_LINKS[@]}"}"; do
+		if [[ -L $path/$entry ]]; then rm -f "$path/$entry"; fi
+		if [[ -L $path-merge/$entry ]]; then rm -f "$path-merge/$entry"; fi
+	done
 	git -C "$WPORG_REPO" worktree remove ${force:+--force} "$path"
-	# wporg-test keeps a detached <path>-merge sibling for testing the branch merged into trunk.
+	# wporg-test keeps a detached <path>-merge sibling for testing the branch merged into the default branch.
 	if [[ -d $path-merge ]]; then
-		rm -f "$path-merge/vendor" "$path-merge/environments/node_modules"
 		git -C "$WPORG_REPO" worktree remove --force "$path-merge"
 	fi
 
