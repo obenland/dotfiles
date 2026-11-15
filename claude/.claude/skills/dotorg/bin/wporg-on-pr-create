@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # wporg-on-pr-create — Claude Code PostToolUse hook. When a Bash call ran
-# `gh pr create` and GitHub answered with a WordPress/wordpress.org PR URL,
-# tell the session to start the pipeline for that PR. The hook itself starts
-# nothing; its output is the instruction the session acts on. Always exits 0.
+# `gh pr create` and GitHub answered with a PR URL in a WordPress/* repo that
+# has a profile and a local checkout, tell the session to start the pipeline
+# for that PR. The hook itself starts nothing; its output is the instruction
+# the session acts on. Always exits 0.
 #
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -14,11 +15,14 @@ command=$(jq -r '.tool_input.command // empty' <<< "$payload")
 [[ $command == *"gh pr create"* ]] || exit 0
 
 response=$(jq -r '.tool_response | if type == "string" then . else (.stdout // "") + "\n" + (.stderr // "") end' <<< "$payload")
-pr=$(grep -oE "github\.com/${WPORG_GH_REPO}/pull/[0-9]+" <<< "$response" | head -1 | grep -oE '[0-9]+$' || true)
-[[ -n $pr ]] || exit 0
+url=$(grep -oE 'github\.com/WordPress/[A-Za-z0-9._-]+/pull/[0-9]+' <<< "$response" | head -1 || true)
+[[ -n $url ]] || exit 0
+repo=$(cut -d/ -f3 <<< "$url"); pr=${url##*/}
+grep -qxF "$repo" < <(profiled_repos) || exit 0
+WPORG_REPO_NAME=$repo
 
 event pipeline queued "$pr" "on PR create"
-msg="PR #$pr was just created in $WPORG_GH_REPO. Start its pipeline now, in the background, and report the verdict when it finishes:
-  $HOME/.claude/skills/dotorg/bin/wporg-pipeline run $pr"
+msg="PR #$pr was just created in WordPress/$repo. Start its pipeline now, in the background, and report the verdict when it finishes:
+  $HOME/.claude/skills/dotorg/bin/wporg-pipeline --repo $repo run $pr"
 jq -n --arg msg "$msg" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $msg}}'
 exit 0
