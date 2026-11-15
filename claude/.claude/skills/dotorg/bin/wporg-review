@@ -109,16 +109,11 @@ headless() {
 	echo "  [round $round, $effort, turns=$(jq -r '.num_turns' <<< "$out") cost=\$$(jq -r '.total_cost_usd * 100 | round / 100' <<< "$out")]" >&2
 }
 
-worktree_for() {
-	local branch path
-	branch=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefName --jq .headRefName)
-	path=$("$SKILL_DIR/bin/wporg-worktree" path "$branch")
-	[[ -n $path ]] || path=$("$SKILL_DIR/bin/wporg-worktree" new "$branch")
-	echo "$branch $path"
-}
+# Prints "<branch>\t<path>\t<remote>\t<head ref>"; see wporg-worktree pr.
+worktree_for() { "$SKILL_DIR/bin/wporg-worktree" pr "$pr"; }
 
 do_review() {
-	local head result branch path
+	local head result wt branch path
 	head=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefOid --jq .headRefOid)
 	event review start "$pr" "round $round ${head:0:10}"
 
@@ -141,7 +136,8 @@ do_review() {
 		} > "$review_file"
 	else
 		[[ -f $review_file ]] || die "No round-1 review for PR #$pr."
-		read -r branch path <<< "$(worktree_for)"
+		wt=$(worktree_for)
+		IFS=$'\t' read -r branch path _ <<< "$wt"
 		[[ -n $base ]] || base=$(sed -n 's/^- head: //p' "$review_file" | head -1)
 		local fix_range="$base..HEAD" fix_diff
 		fix_diff=$(git -C "$path" diff --stat "$fix_range" | tail -1)
@@ -168,8 +164,9 @@ do_review() {
 
 do_resolve() {
 	[[ -f $review_file ]] || die "No saved review for PR #$pr. Run: wporg-review $pr review"
-	local branch path extra prompt
-	read -r branch path <<< "$(worktree_for)"
+	local wt branch path remote ref extra prompt
+	wt=$(worktree_for)
+	IFS=$'\t' read -r branch path remote ref <<< "$wt"
 	[[ -n $base ]] || base=$(sed -n 's/^- head: //p' "$review_file" | head -1)
 
 	extra=$(cat "$POLICY_FILE")
@@ -199,9 +196,9 @@ do_resolve() {
 	event resolve ok "$pr" "round $round${dry:+ dry-run}"
 
 	if [[ -n $push && -z $dry ]]; then
-		if [[ -n $(git -C "$path" log "fork/$branch..HEAD" --oneline 2>/dev/null) ]]; then
-			log "Pushing fix commit to fork/${branch}…"
-			git -C "$path" push fork "$branch"
+		if [[ -n $(git -C "$path" log "$remote/$ref..HEAD" --oneline 2>/dev/null) ]]; then
+			log "Pushing fix commit to $remote/${ref}…"
+			git -C "$path" push "$remote" "$branch:$ref"
 			event push ok "$pr"
 		else
 			log "Nothing to push."

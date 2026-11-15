@@ -13,6 +13,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 usage() {
 	cat <<USAGE
 Usage: wporg-worktree new <branch> [<start-point>]   Create ../<checkout>-<slug> on <branch> (default start: origin/trunk).
+       wporg-worktree pr <PR>                         Print "<branch>\t<path>\t<remote>\t<head ref>" for a PR, creating its worktree if needed.
        wporg-worktree rm <branch|path> [--force]     Remove the worktree; delete the branch when its PR is closed.
        wporg-worktree ls                              List worktrees with dirty-file counts and PR state.
        wporg-worktree path <branch>                   Print the worktree path for a branch.
@@ -22,7 +23,7 @@ USAGE
 	exit "${1:-0}"
 }
 
-require git gh
+require git gh jq
 
 parent=$(dirname "$WPORG_REPO")
 base=$(basename "$WPORG_REPO")
@@ -40,8 +41,40 @@ dirty_entries() {
 }
 
 pr_state() {
+	if [[ $1 =~ ^pr-([0-9]+)$ ]]; then
+		gh pr view "${BASH_REMATCH[1]}" --repo "$WPORG_GH_REPO" --json number,state \
+			--jq '"\(.state|ascii_downcase) #\(.number)"' 2>/dev/null || echo "unknown"
+		return
+	fi
 	gh pr list --repo "$WPORG_GH_REPO" --head "$1" --state all --limit 1 --json number,state \
 		--jq 'if length==0 then "no-pr" else "\(.[0].state|ascii_downcase) #\(.[0].number)" end' 2>/dev/null || echo "unknown"
+}
+
+link_deps() {
+	# Exclude the links in the shared info/exclude so `git add -A` can't commit them.
+	local exclude entry
+	exclude="$(git -C "$WPORG_REPO" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+	for entry in /vendor /environments/node_modules; do
+		grep -qxF "$entry" "$exclude" 2>/dev/null || echo "$entry" >> "$exclude"
+	done
+
+	if [[ -d $WPORG_REPO/vendor ]]; then ln -s "$WPORG_REPO/vendor" "$1/vendor"; fi
+	if [[ -d $WPORG_REPO/environments/node_modules ]]; then ln -s "$WPORG_REPO/environments/node_modules" "$1/environments/node_modules"; fi
+}
+
+lower() { tr '[:upper:]' '[:lower:]' <<< "$1"; }
+
+# remote_for <owner> <repo> — the remote for github.com/<owner>/<repo>, added under the owner's name when there is none.
+remote_for() {
+	local want name url
+	want=$(lower "$1/$2")
+	while read -r name url _; do
+		[[ $(lower "$url") =~ github\.com[:/]([^/]+/[^/]+)$ && ${BASH_REMATCH[1]%.git} == "$want" ]] && { echo "$name"; return; }
+	done < <(git -C "$WPORG_REPO" remote -v | grep ' (push)$')
+	name=$(lower "$1")
+	git -C "$WPORG_REPO" remote get-url "$name" >/dev/null 2>&1 && die "Remote $name exists but does not point at $1/$2."
+	git -C "$WPORG_REPO" remote add "$name" "git@github.com:$1/$2.git"
+	echo "$name"
 }
 
 cmd_new() {
@@ -66,12 +99,48 @@ cmd_new() {
 	git -C "$path" config "branch.$branch.remote" fork
 	git -C "$path" config "branch.$branch.merge" "refs/heads/$branch"
 	git -C "$path" config push.autoSetupRemote true
-
-	[[ -d $WPORG_REPO/vendor ]] && ln -s "$WPORG_REPO/vendor" "$path/vendor"
-	[[ -d $WPORG_REPO/environments/node_modules ]] && ln -s "$WPORG_REPO/environments/node_modules" "$path/environments/node_modules"
+	link_deps "$path"
 
 	event worktree created "" "$branch"
 	echo "$path"
+}
+
+# A PR from your fork is worked on under its own branch name. Anyone else's is checked out as pr-<N> at its head, since
+# their branch name (patch-1, trunk) says nothing about which local branch holds it.
+cmd_pr() {
+	local pr=${1:-}
+	[[ $pr =~ ^[0-9]+$ ]] || usage 1
+	local json ref oid owner repo branch remote path
+	json=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefName,headRefOid,headRepository,headRepositoryOwner)
+	ref=$(jq -r .headRefName <<< "$json"); oid=$(jq -r .headRefOid <<< "$json")
+	owner=$(jq -r '.headRepositoryOwner.login // empty' <<< "$json"); repo=$(jq -r '.headRepository.name // empty' <<< "$json")
+	[[ $ref =~ ^[A-Za-z0-9._/-]+$ && $oid =~ ^[0-9a-f]{40}$ ]] || die "Unexpected head for PR #$pr."
+	[[ $owner =~ ^[A-Za-z0-9-]+$ && $repo =~ ^[A-Za-z0-9._-]+$ ]] || die "PR #$pr's head repository no longer exists."
+
+	remote=$(remote_for "$owner" "$repo")
+	if [[ $remote == fork ]]; then
+		branch=$ref
+		path=$(path_for_branch "$branch")
+		[[ -n $path ]] || path=$(cmd_new "$branch")
+	else
+		branch=pr-$pr
+		path=$(path_for_branch "$branch")
+		if [[ -z $path ]]; then
+			path="$parent/$base-$branch"
+			[[ -e $path ]] && die "$path already exists."
+			git_retry -C "$WPORG_REPO" fetch -q "$remote" "$ref"
+			if git -C "$WPORG_REPO" show-ref -q --verify "refs/heads/$branch"; then
+				git -C "$WPORG_REPO" worktree add -q "$path" "$branch"
+			else
+				git -C "$WPORG_REPO" worktree add -q -b "$branch" "$path" "$oid"
+			fi
+			git -C "$path" config "branch.$branch.remote" "$remote"
+			git -C "$path" config "branch.$branch.merge" "refs/heads/$ref"
+			link_deps "$path"
+			event worktree created "$pr" "$branch"
+		fi
+	fi
+	printf '%s\t%s\t%s\t%s\n' "$branch" "$path" "$remote" "$ref"
 }
 
 cmd_rm() {
@@ -124,6 +193,7 @@ case ${1:-} in
 	new)  shift; cmd_new "$@" ;;
 	rm)   shift; cmd_rm "$@" ;;
 	ls)   cmd_ls ;;
+	pr)   shift; cmd_pr "$@" ;;
 	path) [[ -n ${2:-} ]] || usage 1; path_for_branch "$2" ;;
 	-h|--help|"") usage ;;
 	*) usage 1 ;;

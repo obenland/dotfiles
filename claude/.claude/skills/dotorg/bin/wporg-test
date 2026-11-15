@@ -64,9 +64,8 @@ if [[ -z $target ]]; then
 	[[ -n $wt && -f $wt/.github/unit-tests-suites.yml ]] || die "Not inside a wordpress.org checkout; pass a PR, branch, or path."
 elif [[ $target =~ ^[0-9]+$ ]]; then
 	pr=$target
-	branch=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefName --jq .headRefName)
-	wt=$("$SKILL_DIR/bin/wporg-worktree" path "$branch")
-	[[ -n $wt ]] || wt=$("$SKILL_DIR/bin/wporg-worktree" new "$branch")
+	wt=$("$SKILL_DIR/bin/wporg-worktree" pr "$pr")
+	wt=$(cut -f2 <<< "$wt")
 elif [[ -d $target ]]; then
 	wt=$(cd "$target" && git rev-parse --show-toplevel)
 else

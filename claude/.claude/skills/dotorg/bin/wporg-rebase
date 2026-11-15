@@ -44,17 +44,16 @@ while [[ $# -gt 0 ]]; do
 	shift
 done
 
-branch=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefName --jq .headRefName)
 head=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefOid --jq .headRefOid)
-[[ $branch =~ ^[A-Za-z0-9._/-]+$ && $head =~ ^[0-9a-f]{40}$ ]] || die "Unexpected branch or head for PR #$pr."
-path=$("$BIN/wporg-worktree" path "$branch")
-[[ -n $path ]] || path=$("$BIN/wporg-worktree" new "$branch")
+[[ $head =~ ^[0-9a-f]{40}$ ]] || die "Unexpected head for PR #$pr."
+wt=$("$BIN/wporg-worktree" pr "$pr")
+IFS=$'\t' read -r branch path remote ref <<< "$wt"
 path=$(cd "$path" && pwd -P)
 gitdir=$(git -C "$path" rev-parse --path-format=absolute --git-dir)
 common=$(git -C "$path" rev-parse --path-format=absolute --git-common-dir)
 
 git_retry -C "$path" fetch -q origin trunk
-git_retry -C "$path" fetch -q fork "$branch" 2>/dev/null || true
+git_retry -C "$path" fetch -q "$remote" "$ref" 2>/dev/null || true
 # Ignored entries count for the before/after comparison, not for the cleanliness check.
 tree_state() { git -C "$path" status --porcelain --ignored || true; }
 dirty() { git -C "$path" status --porcelain | grep -vE '^\?\? (vendor|environments/node_modules)$' || true; }

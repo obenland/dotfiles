@@ -4,7 +4,7 @@
 #
 # run:    bring the worktree to the PR head; if the branch no longer merges into
 #         trunk, rebase it (wporg-rebase), verify the result with the merged
-#         tests, and push it to the fork with a lease. Then review the head in
+#         tests, and push it to your fork with a lease (your own PRs only). Then review the head in
 #         rounds (wporg-review), triage into one fix commit, run the local
 #         checks on the result, and record a verdict. Fix commits are not pushed.
 # sweep:  run every open PR of yours whose head has changed since it was last seen,
@@ -104,14 +104,15 @@ cmd_run() {
 	[[ $rounds =~ ^[0-9]+$ && $min_rounds =~ ^[0-9]+$ ]] || usage 1
 	lock "$pr"
 
-	local json head branch state draft path rc=0 reviewed transient=false
-	json=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefOid,headRefName,state,isDraft)
-	head=$(jq -r .headRefOid <<< "$json"); branch=$(jq -r .headRefName <<< "$json")
+	local json head branch remote ref state draft wt path rc=0 reviewed transient=false
+	json=$(gh pr view "$pr" --repo "$WPORG_GH_REPO" --json headRefOid,state,isDraft)
+	head=$(jq -r .headRefOid <<< "$json")
 	state=$(jq -r .state <<< "$json"); draft=$(jq -r .isDraft <<< "$json")
 	[[ $head =~ ^[0-9a-f]{40}$ ]] || die "Unexpected head for PR #$pr: $head"
-	[[ $branch =~ ^[A-Za-z0-9._/-]+$ ]] || die "Unexpected branch name for PR #$pr: $branch"
 	[[ $state == "OPEN" ]] || { log "PR #$pr is $state; nothing to do."; state_set "$pr" '.head = $h | .verdict = "closed"' --arg h "$head"; return 0; }
 	[[ $draft == "false" ]] || { log "PR #$pr is a draft; skipping."; return 0; }
+	wt=$("$BIN/wporg-worktree" pr "$pr")
+	IFS=$'\t' read -r branch path remote ref <<< "$wt"
 
 	log "PR #$pr ($branch) at ${head:0:10}"
 	event pipeline start "$pr" "${head:0:10}"
@@ -121,10 +122,8 @@ cmd_run() {
 	[[ $(state_get "$pr" head) == "$head" ]] || attempts=0
 	state_set "$pr" '.head = $h | .branch = $b | .verdict = "running" | .attempts = ($a | tonumber)' --arg h "$head" --arg b "$branch" --arg a "$(( attempts + 1 ))"
 
-	path=$("$BIN/wporg-worktree" path "$branch")
-	[[ -n $path ]] || path=$("$BIN/wporg-worktree" new "$branch")
 	# Fast-forward the worktree to the PR head. A local fix commit the PR has moved past is never discarded; the run just reports it.
-	git_retry -C "$path" fetch -q fork "$branch" 2>/dev/null || true
+	git_retry -C "$path" fetch -q "$remote" "$ref" 2>/dev/null || true
 	if ! git -C "$path" merge -q --ff-only "$head" 2>/dev/null; then
 		warn "$path is not at the PR head and cannot fast-forward; reconcile it by hand (unpushed fix commit?)."
 	fi
@@ -136,8 +135,9 @@ cmd_run() {
 	fi
 
 	# ── Rebase when the branch no longer merges into trunk ────────────────────
+	# Only your own branches are force-pushed; a contributor's conflict is left to the test step to report.
 	git_retry -C "$path" fetch -q origin trunk
-	if [[ $(git -C "$path" rev-parse HEAD) == "$head" ]] && ! git -C "$path" merge-tree --write-tree origin/trunk HEAD >/dev/null 2>&1; then
+	if [[ $remote == fork && $(git -C "$path" rev-parse HEAD) == "$head" ]] && ! git -C "$path" merge-tree --write-tree origin/trunk HEAD >/dev/null 2>&1; then
 		local new_head
 		if ! new_head=$("$BIN/wporg-rebase" "$pr" | tail -n 1); then
 			finish "$pr" 1 "needs rebase: conflicts with trunk the session could not resolve"; return 1
@@ -216,7 +216,7 @@ cmd_run() {
 	if [[ $rc != 0 ]]; then
 		verdict="failed"
 	elif [[ $unpushed -gt 0 ]]; then
-		verdict="ready: $unpushed fix commit(s) to push with: git -C $path push fork $branch"
+		verdict="ready: $unpushed fix commit(s) to push with: git -C $path push $remote $([[ $branch == "$ref" ]] && echo "$branch" || echo "$branch:$ref")"
 	else
 		verdict="ready: nothing to fix"
 	fi

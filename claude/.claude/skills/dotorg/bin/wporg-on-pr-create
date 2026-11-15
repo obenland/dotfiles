@@ -18,8 +18,7 @@ pr=$(grep -oE "github\.com/${WPORG_GH_REPO}/pull/[0-9]+" <<< "$response" | head 
 [[ -n $pr ]] || exit 0
 
 event pipeline queued "$pr" "on PR create"
-cat <<MSG
-PR #$pr was just created in $WPORG_GH_REPO. Start its pipeline now, in the background, and report the verdict when it finishes:
-  $HOME/.claude/skills/dotorg/bin/wporg-pipeline run $pr
-MSG
+msg="PR #$pr was just created in $WPORG_GH_REPO. Start its pipeline now, in the background, and report the verdict when it finishes:
+  $HOME/.claude/skills/dotorg/bin/wporg-pipeline run $pr"
+jq -n --arg msg "$msg" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $msg}}'
 exit 0
