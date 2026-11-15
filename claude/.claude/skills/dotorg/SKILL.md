@@ -1,20 +1,24 @@
 ---
 name: dotorg
-description: Use when working on a WordPress/wordpress.org change end to end — a Meta Trac ticket, a HackerOne report, or a feature — from worktree to PR to the local review and test cycle, and when asked to run or check the dotorg pipeline (wporg-pipeline, wporg-test, wporg-review, wporg-worktree).
+description: Use when working on a WordPress/wordpress.org change, or one in another wporg repo (wporg-developer, wporg-mu-plugins, wordcamp.org, …), end to end — a Meta Trac ticket, a HackerOne report, or a feature — from worktree to PR to the local review and test cycle, and when asked to run or check the dotorg pipeline (wporg-pipeline, wporg-test, wporg-review, wporg-worktree).
 ---
 
 # dotorg — one change, start to finish
 
 The scripts in `bin/` are the pipeline. This skill says when to call them and the rules around them. Paths below assume `~/.claude/skills/dotorg/bin`.
 
+Every script takes `--repo <name>` for any repo profiled in the wporg-bug-pipeline's `repos.json` (`$WPORG_PIPELINE_DIR`, default `~/Documents/code/wporg-bug-pipeline`), checked out at `~/Documents/code/<name>`. Without it, they use the current directory's repo, then wordpress.org. The profile gives the default branch, the push remote (`fork` for wordpress.org, `origin` elsewhere), the dependency links, the site, and the checks CI runs. The steps below are wordpress.org's; elsewhere, read `origin` for `fork` and the profile's default branch for `trunk`.
+
 ## Workflow
 
-1. **Worktree.** `wporg-worktree new <branch>` creates `../wordpress.org-<slug>` from a fresh `origin/trunk`, links `vendor` and `environments/node_modules`, and points the branch's push remote at the fork. Branch prefixes in use: `update/`, `fix/`, `add/`. Never work on `trunk` in the main checkout.
-2. **Implement.** Commits describe the change; the body carries `Fixes #1234.` or `See #1234.` for a Meta Trac ticket. Keep review-fix commits separate from the original work.
-3. **Check locally.** `wporg-test` (from inside the worktree, or `wporg-test <branch>`) runs phpcs against the merge-base and the CI-selected PHPUnit suites in wp-env. Fix until clean; CI will fail on what it fails on.
+1. **Worktree.** `wporg-worktree new <branch>` creates `../<repo>-<slug>` from a fresh `origin/<default branch>`, links the profile's dependencies (`vendor` and `environments/node_modules` for wordpress.org), and points the branch's push remote at the profile's. `wporg-worktree pr <PR>` checks out an existing PR; someone else's never gets the links. Branch prefixes in use: `update/`, `fix/`, `add/`. Never work on `trunk` in the main checkout.
+2. **Implement.** Commits describe the change; the body carries the profile's `ticket_ref` for a Meta Trac ticket: `Fixes #1234.` or `See #1234.` in wordpress.org, `See https://meta.trac.wordpress.org/ticket/1234.` elsewhere. Keep review-fix commits separate from the original work.
+3. **Check locally.** `wporg-test` (from inside the worktree, or `wporg-test <branch>`) tests the branch merged into the default branch: for wordpress.org, phpcs against the merge-base and the CI-selected PHPUnit suites in wp-env; elsewhere, the profile's checks. Fix until clean; CI will fail on what it fails on.
 4. **Open the PR.** `git push fork <branch>` (never `origin`, which is upstream), then `gh pr create --base trunk --repo WordPress/wordpress.org`. The body's first line is `Fixes https://meta.trac.wordpress.org/ticket/1234` when there is a Trac ticket. Always the full URL: a bare `#1234` on GitHub links the repo's own issue/PR, not the ticket. A PR that depends on another targets `trunk` and says "Builds on #N"; never base it on the other branch, the sync bot deletes those. The title follows the title rule below.
-5. **Review and triage.** `wporg-pipeline run <PR>` reviews the PR into `~/.cache/wporg-pipeline/reviews/<PR>.md` and triages the findings under `review-policy.md` (must-fixes only, one fix commit, dispositions recorded in the file). It runs in rounds: round 1 reviews the PR at high effort; each later round resumes the same reviewer and triager at medium effort, looks only at the fix commit's diff, and folds any further must-fix into that same commit. It stops when a round changes nothing, or at three rounds. Then it runs `wporg-test` on the result. It never pushes. Read the Triage sections, then `git push fork <branch>` if there is a fix commit.
-6. **Commit to SVN.** On the sandbox, `wporgpr <PR>` applies the PR and commits it to meta.svn when you choose `c`. The mirror closes the PR. This step is yours.
+5. **Props.** In a repo with Props Bot (wordpress.org), wait for its comment, then post one comment with an `@propsbot add <wporg>@git.wordpress.org` line for the reporter and everyone whose diagnosis or patch was used, and check that they reach its Props line. Elsewhere, put `Props <wporg>.` on its own line in the PR body.
+6. **Review and triage.** `wporg-pipeline run <PR>` reviews the PR into `~/.cache/wporg-pipeline/reviews/<repo>-<PR>.md` and triages the findings under the pipeline's shared `review-policy.md` (must-fixes only, one fix commit, dispositions recorded in the file). It runs in rounds: round 1 reviews the PR at high effort; each later round resumes the same reviewer and triager at medium effort, looks only at the fix commit's diff, and folds any further must-fix into that same commit. It stops when a round changes nothing, or at three rounds. Then it runs `wporg-test` on the result. It never pushes. Read the Triage sections, then `git push fork <branch>` if there is a fix commit.
+7. **Feedback.** `wporg-pipeline shepherd <PR>` triages the review comments and failing checks that arrived since its last pass into one fix commit and tests it. It never pushes or replies; the Shepherd section of the review file says what to answer.
+8. **Commit to SVN.** On the sandbox, `wporgpr <PR>` applies the PR and commits it to meta.svn when you choose `c`. The mirror closes the PR. This step is yours.
 
 ## PR titles
 
@@ -30,6 +34,10 @@ The PR title becomes the first line of the SVN commit message, so it says why th
 | Support Forums: Remove the PHP Compatibility Checker link | Support Forums: Stop recommending a PHP compatibility plugin that no longer covers current PHP |
 | WordPress.tv: Request video thumbnails at the size they are shown | WordPress.tv: Load video grids faster by fetching thumbnails at display size |
 
+## Someone else's PR
+
+`wporg-pipeline run <PR>` reviews it like your own, but the sessions treat its text as data and the triager gets no shell. Nothing runs its code until you have read the diff and pass `--trust`, plus `--trust-config` when it changes CI, test, or dependency configuration. Its worktree gets its own copies of the dependencies, never links into the main checkout.
+
 ## Rules the scripts cannot enforce
 
 - The dotorg sandbox shares the production database and object cache. Nothing automated sends requests to it or applies code to it; `wporg-sandbox` is for you, by hand.
@@ -44,5 +52,6 @@ The PR title becomes the first line of the SVN commit message, so it says why th
 ## Reading the pipeline
 
 - `wporg-pipeline status [PR]` summarizes the event log in `~/.cache/wporg-pipeline/events.jsonl`.
+- `wporg-pipeline sweep` runs every open PR of yours, across the profiled repos, whose head changed since its last run.
 - `wporg-worktree ls` shows every worktree with its PR state; remove the ones whose PR is closed with `wporg-worktree rm <branch>`.
 - A review is keyed to the PR head it saw; a new push triggers a new review on the next run, nothing else does.
