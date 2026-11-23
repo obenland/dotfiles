@@ -6,11 +6,14 @@
 #           its default branch, rebase it (wporg-rebase), verify the result with the
 #           merged tests, and push it with a lease (your own PRs only). Then review the
 #           head in rounds (wporg-review), triage into one fix commit, run the local
-#           checks on the result, and record a verdict. Fix commits are not pushed.
+#           checks on the result, and record a verdict. On your own PR, fix commits that
+#           pass the checks are pushed (never forced); on someone else's they are left to you.
 # shepherd: on your own PR, triage the review comments and failing checks that arrived
-#           since the last pass into one fix commit, and test it. Never pushes or replies.
+#           since the last pass into one fix commit, test it, and push it when the checks
+#           pass. Never replies.
 # sweep:    run every open PR of yours, in every profiled repo with a checkout, whose head
-#           has changed since it was last seen, and retry failed runs.
+#           has changed since it was last seen, and retry failed runs. Then remove the worktrees
+#           (and their wp-env instances) whose PR is merged or closed; see wporg-worktree prune.
 # status:   what the event log says, per PR.
 #
 # Every command takes --repo <name> (default: the current directory's repo, then wordpress.org);
@@ -45,7 +48,8 @@ when the failure was a session or API error; other failures wait for a new push.
 with its default branch is rebased, tested, and pushed with a lease first. Round 1 reviews the PR at --effort (default high);
 each later round resumes the same sessions at medium effort and reviews only the fix commit, until a
 round changes nothing or --rounds (default 3) is reached. --min-rounds forces at least that many
-rounds, for exercising the loop. A fix commit stays in the worktree until you push it.
+rounds, for exercising the loop. A fix commit that passes the checks is pushed on your own PR; otherwise it
+stays in the worktree until you push it.
 USAGE
 	exit "${1:-0}"
 }
@@ -124,6 +128,26 @@ open_pr() {
 		finish "$pr" 1 "blocked: uncommitted changes in $path" || true
 		die "$path has uncommitted changes; commit or stash them, then rerun."
 	fi
+}
+
+# push_cmd — the command that pushes the worktree's fix commits to the PR branch.
+push_cmd() {
+	echo "git -C $path push $remote $([[ $branch == "$ref" ]] && echo "$branch" || echo "$branch:$ref")"
+}
+
+# push_fixes <pr> — push the tested fix commits of your own PR, without force, and record the pushed head as reviewed
+# and tested so the sweep doesn't review its own fix again. Sets head to the pushed head; returns 1 when the push is refused.
+push_fixes() {
+	local pr=$1 new_head
+	new_head=$(git -C "$path" rev-parse HEAD)
+	if ! git -C "$path" push -q "$remote" "$branch:$ref"; then
+		event push failed "$pr" "fix commits ${head:0:10}..${new_head:0:10}"
+		return 1
+	fi
+	event push ok "$pr" "fix commits ${head:0:10}..${new_head:0:10}"
+	ok "PR #$pr: pushed fix commits ${head:0:10} -> ${new_head:0:10}"
+	head=$new_head
+	state_set "$(pr_key "$pr")" '.head = $h | .reviewed_head = $h | .tested_head = $h' --arg h "$head"
 }
 
 # test_worktree <pr> — wporg-test on the worktree as it stands. A trust gate is no failure: it sets gated and returns 0.
@@ -249,12 +273,20 @@ cmd_run() {
 
 	local verdict unpushed
 	unpushed=$(git -C "$path" log --oneline "$head..HEAD" 2>/dev/null | wc -l | tr -d ' ')
-	if [[ $rc != 0 ]]; then
+	if [[ $rc != 0 && $unpushed -gt 0 ]]; then
+		verdict="failed, with $unpushed unpushed fix commit(s); once the checks pass: $(push_cmd)"
+	elif [[ $rc != 0 ]]; then
 		verdict="failed"
 	elif [[ -n $gated ]]; then
 		verdict="reviewed, $gated"
+	elif [[ $unpushed -gt 0 && $trust == own ]]; then
+		if push_fixes "$pr"; then
+			verdict="ready: pushed $unpushed fix commit(s)"; unpushed=0
+		else
+			rc=1; verdict="push refused: the PR branch moved; $unpushed fix commit(s) left in $path"
+		fi
 	elif [[ $unpushed -gt 0 ]]; then
-		verdict="ready: $unpushed fix commit(s) to push with: git -C $path push $remote $([[ $branch == "$ref" ]] && echo "$branch" || echo "$branch:$ref")"
+		verdict="ready: $unpushed fix commit(s) to push with: $(push_cmd)"
 	else
 		verdict="ready: nothing to fix"
 	fi
@@ -347,9 +379,13 @@ cmd_shepherd() {
 	local unpushed
 	unpushed=$(git -C "$path" log --oneline "$head..HEAD" 2>/dev/null | wc -l | tr -d ' ')
 	if [[ $rc != 0 ]]; then
-		finish "$pr" 1 "shepherd: checks failed on the fix commit" "$unpushed"
+		finish "$pr" 1 "shepherd: checks failed on the fix commit; $unpushed unpushed fix commit(s); once the checks pass: $(push_cmd)" "$unpushed"
 	elif [[ $unpushed -gt 0 ]]; then
-		finish "$pr" 0 "shepherd: $unpushed fix commit(s) to push with: git -C $path push $remote $([[ $branch == "$ref" ]] && echo "$branch" || echo "$branch:$ref"); replies are yours to post" "$unpushed"
+		if push_fixes "$pr"; then
+			finish "$pr" 0 "shepherd: pushed $unpushed fix commit(s); replies are yours to post"
+		else
+			finish "$pr" 1 "shepherd: push refused: the PR branch moved; $unpushed fix commit(s) left in $path" "$unpushed"
+		fi
 	else
 		finish "$pr" 0 "shepherd: nothing to change; see the Shepherd section for replies"
 	fi
@@ -398,6 +434,10 @@ cmd_sweep() {
 		else
 			rc=1; log "${pids[$pid]}: $(jq -r '.verdict // "failed"' "$STATE_DIR/${pids[$pid]}.json" 2>/dev/null)"
 		fi
+	done
+	# Worktrees of every profiled repo, not only those with open PRs: a repo whose last PR closed still has its worktree.
+	for r in $([[ -n $repo_name ]] && echo "$WPORG_REPO_NAME" || profiled_repos); do
+		"$BIN/wporg-worktree" --repo "$r" prune < /dev/null || warn "Worktree prune failed for $r."
 	done
 	log "Sweep done at $(date -u +%Y-%m-%dT%H:%M:%SZ): $checked open PRs, ${#queue[@]} run in parallel."
 	event sweep "$([[ $rc == 0 ]] && echo ok || echo failed)" "" "$checked checked, ${#queue[@]} run"

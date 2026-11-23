@@ -86,19 +86,23 @@
       "Read(~/.gnupg/**)",
       "Read(~/.netrc)",
       "Read(~/.npmrc)",
-      "Read(~/.docker/config.json)",
       "Read(~/.zsh_history)",
-      "Read(~/.bash_history)",
-      "Read(~/Library/**)"
-    ],
-    "ask": [
-      "Bash(rm -r *)",
-      "Bash(rm -rf *)",
-      "Bash(svn ci *)"
+      "Read(~/.bash_history)"
     ],
     "defaultMode": "auto"
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/wp-env-prune-daily.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
@@ -136,6 +140,29 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/dotorg/bin/wporg-session-event",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/dotorg/bin/wporg-on-pr-create",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   },
   "statusLine": {
@@ -170,6 +197,9 @@
   "effortLevel": "high",
   "modelSettings": {
     "claude-opus-5-5": {
+      "effortLevel": "high"
+    },
+    "claude-mythos-5-2": {
       "effortLevel": "high"
     }
   },

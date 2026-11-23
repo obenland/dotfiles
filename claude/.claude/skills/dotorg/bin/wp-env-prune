@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+#
+# wp-env-prune — remove wp-env instances that are no longer needed, with their Docker resources.
+#
+# wp-env keeps one instance per config path in $WP_ENV_HOME (~/.wp-env): a copy
+# of WordPress, the tests copy, downloaded plugins and themes, plus built images
+# and MySQL volumes in Docker. Every worktree and every environment gets its
+# own, and nothing removes them, so they pile up (130 GB by 2026-11).
+#
+# An instance is pruned when it has no running container and either its project
+# is gone (none of its mounted host paths exist) or it has been idle longer than
+# --days. Pruning removes its containers, volumes, networks and built images,
+# then its directory. Images and volumes of instances whose directory is already
+# gone are removed too.
+#
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+usage() {
+	cat <<USAGE
+Usage: wp-env-prune [--days N] [--path DIR] [--all] [--builder-cache] [--dry-run] [--quiet]
+
+  --days N         Also prune instances idle for more than N days (default 14; 0 = only orphans).
+  --path DIR       Only consider instances that mount DIR or something below it (used by wporg-worktree rm).
+  --all            Prune every instance without a running container.
+  --builder-cache  Also prune Docker build cache older than 7 days.
+  --dry-run        Print what would be removed.
+  --quiet          Print only the summary line.
+USAGE
+	exit "${1:-0}"
+}
+
+home=${WP_ENV_HOME:-$HOME/.wp-env}
+days=14 only_path="" all="" builder="" dry="" quiet=""
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		--days) days=${2:?}; shift ;;
+		--path) only_path=$(cd "${2:?}" 2>/dev/null && pwd -P || echo "${2%/}"); shift ;;
+		--all) all=1 ;;
+		--builder-cache) builder=1 ;;
+		--dry-run) dry=1 ;;
+		--quiet) quiet=1 ;;
+		-h|--help) usage ;;
+		*) usage 1 ;;
+	esac
+	shift
+done
+
+require docker jq
+docker info >/dev/null 2>&1 || { [[ -n $quiet ]] || warn "Docker isn't running; nothing pruned."; exit 0; }
+[[ -d $home ]] || exit 0
+
+say() { [[ -n $quiet ]] || log "$@"; }
+now=$(date +%s)
+
+# Project → "running" or the latest start/finish time of its containers.
+declare -A running last
+while read -r project id state; do
+	[[ -n $project ]] || continue
+	[[ $state == running ]] && running[$project]=1
+done < <(docker ps -a --format '{{.Label "com.docker.compose.project"}} {{.ID}} {{.State}}')
+ids=$(docker ps -aq)
+if [[ -n $ids ]]; then
+	while IFS=$'\t' read -r project ts; do
+		[[ -n $project ]] && last[$project]=$ts
+	done < <(docker inspect $ids | jq -r '
+		group_by(.Config.Labels["com.docker.compose.project"] // "")[]
+		| [.[0].Config.Labels["com.docker.compose.project"] // "",
+		   ([.[].State | .StartedAt, .FinishedAt | sub("\\.[0-9]+"; "") | (fromdateiso8601? // 0)] | max)]
+		| @tsv')
+fi
+
+# remove_project <name> — containers, volumes, networks and built images of one compose project.
+remove_project() {
+	local p=$1 c v n i
+	c=$(docker ps -aq --filter "label=com.docker.compose.project=$p")
+	v=$(docker volume ls -q | grep -E "^${p}_" || true)
+	n=$(docker network ls -q --filter "label=com.docker.compose.project=$p")
+	i=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E "^${p}-[a-z-]+:" || true)
+	[[ -z $c ]] || docker rm -f $c >/dev/null
+	[[ -z $v ]] || docker volume rm $v >/dev/null
+	[[ -z $n ]] || docker network rm $n >/dev/null 2>&1 || true
+	[[ -z $i ]] || docker image rm $i >/dev/null 2>&1 || true
+}
+
+pruned=0 kept=0 freed=0
+for dir in "$home"/*/; do
+	dir=${dir%/}
+	name=$(basename "$dir")
+	compose=$dir/docker-compose.yml
+	sources=()
+	if [[ -f $compose ]]; then
+		mapfile -t sources < <(grep -oE "$HOME/[^:'\" ]+" "$compose" | grep -v "^$home/" | sort -u)
+	fi
+
+	if [[ -n $only_path ]]; then
+		match=""
+		for s in "${sources[@]+"${sources[@]}"}"; do
+			[[ $s == "$only_path" || $s == "$only_path"/* ]] && { match=1; break; }
+		done
+		[[ -n $match ]] || continue
+	fi
+
+	if [[ -n ${running[$name]:-} ]]; then
+		kept=$((kept + 1)); continue
+	fi
+
+	orphan=1
+	for s in "${sources[@]+"${sources[@]}"}"; do
+		[[ -e $s ]] && { orphan=""; break; }
+	done
+	seen=${last[$name]:-$(stat -f %m "$dir")}
+	idle=$(( (now - seen) / 86400 ))
+
+	reason=""
+	if [[ -n $all || -n $only_path ]]; then reason="requested"
+	elif [[ -n $orphan ]]; then reason="project gone"
+	elif (( days > 0 && idle > days )); then reason="idle ${idle}d"
+	fi
+	if [[ -z $reason ]]; then
+		kept=$((kept + 1)); continue
+	fi
+
+	kb=$(du -xsk "$dir" 2>/dev/null | cut -f1)
+	say "$name ($reason, $((kb / 1024)) MB)${sources[0]:+ — ${sources[0]}}"
+	pruned=$((pruned + 1)); freed=$((freed + kb))
+	[[ -n $dry ]] && continue
+	remove_project "$name"
+	rm -rf "$dir"
+done
+
+# Leftover images and volumes of instances whose directory is already gone.
+ghosts=0
+if [[ -z $only_path ]]; then
+	while read -r p; do
+		[[ -d $home/$p ]] && continue
+		[[ -n ${running[$p]:-} ]] && continue
+		ghosts=$((ghosts + 1))
+		[[ -n $dry ]] || remove_project "$p"
+	done < <({
+		docker images --format '{{.Repository}}'
+		docker volume ls -q
+	} | grep -oE '^([0-9a-f]{32}|wp-env-[a-z0-9.-]+-[0-9a-f]{8})' | sort -u)
+fi
+
+if [[ -n $builder && -z $dry && -z $only_path ]]; then
+	docker builder prune -f --filter until=168h >/dev/null
+fi
+
+verb=removed; [[ -z $dry ]] || verb="would remove"
+msg="wp-env-prune: $verb $pruned instances ($((freed / 1048576)) GB) and $ghosts leftover Docker projects; kept $kept."
+if [[ -n $quiet ]]; then echo "$msg" >&2; else ok "$msg"; fi

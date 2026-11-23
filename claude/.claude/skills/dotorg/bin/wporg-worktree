@@ -16,6 +16,7 @@ Usage: wporg-worktree new <branch> [<start-point>]   Create ../<repo>-<slug> on 
        wporg-worktree pr <PR>                         Print "<branch>\t<path>\t<remote>\t<head ref>\t<own|other>" for a PR, creating its worktree if needed.
        wporg-worktree rm <branch|path> [--force]     Remove the worktree; delete the branch when its PR is closed.
        wporg-worktree ls                              List worktrees with dirty-file counts and PR state.
+       wporg-worktree prune [--dry-run]               Remove worktrees whose PR is merged or closed, unless dirty, ahead of the PR, or mounted by a running container.
        wporg-worktree path <branch>                   Print the worktree path for a branch.
 
 Every command takes --repo <name>: a repo profiled in \$WPORG_PIPELINE_DIR/repos.json, checked out at
@@ -183,6 +184,11 @@ cmd_rm() {
 		if [[ -L $path/$entry ]]; then rm -f "$path/$entry"; fi
 		if [[ -L $path-merge/$entry ]]; then rm -f "$path-merge/$entry"; fi
 	done
+	# Drop the worktree's wp-env instances while their mounted paths still resolve.
+	"$(dirname "${BASH_SOURCE[0]}")/wp-env-prune" --quiet --path "$path" || warn "wp-env-prune failed for $path."
+	if [[ -d $path-merge ]]; then
+		"$(dirname "${BASH_SOURCE[0]}")/wp-env-prune" --quiet --path "$path-merge" || warn "wp-env-prune failed for $path-merge."
+	fi
 	git -C "$WPORG_REPO" worktree remove ${force:+--force} "$path"
 	# wporg-test keeps a detached <path>-merge sibling for testing the branch merged into the default branch.
 	if [[ -d $path-merge ]]; then
@@ -211,10 +217,57 @@ cmd_ls() {
 	done
 }
 
+# pr_info <branch> — "<state> <number> <head sha>" of the branch's PR (or of PR <N> for a pr-<N> branch); empty when there is none.
+pr_info() {
+	if [[ $1 =~ ^pr-([0-9]+)$ ]]; then
+		gh pr view "${BASH_REMATCH[1]}" --repo "$WPORG_GH_REPO" --json number,state,headRefOid \
+			--jq '"\(.state|ascii_downcase) \(.number) \(.headRefOid)"' 2>/dev/null || true
+		return
+	fi
+	gh pr list --repo "$WPORG_GH_REPO" --head "$1" --state all --limit 1 --json number,state,headRefOid \
+		--jq '.[0] | select(.) | "\(.state|ascii_downcase) \(.number) \(.headRefOid)"' 2>/dev/null || true
+}
+
+# Remove every worktree whose PR is merged or closed, as long as nothing local would be lost.
+cmd_prune() {
+	local dry=${1:-} mounts path branch state number head local_head removed=0 kept=0
+	[[ -z $dry || $dry == --dry-run ]] || usage 1
+	mounts=$(docker ps -q 2>/dev/null | xargs docker inspect --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' 2>/dev/null || true)
+	while IFS=$'\t' read -r path branch; do
+		[[ $path == "$WPORG_REPO" ]] && continue
+		state="" number="" head=""
+		read -r state number head <<< "$(pr_info "$branch")"
+		[[ $state == merged || $state == closed ]] || continue
+		if [[ -n $(dirty_entries "$path") ]]; then
+			warn "Kept $path: uncommitted changes (#$number $state)."; kept=$((kept + 1)); continue
+		fi
+		# The PR head stays on GitHub as refs/pull/<N>/head, so only commits beyond it would be lost.
+		local_head=$(git -C "$path" rev-parse HEAD)
+		# A worktree behind the PR has never fetched its head; fetch it before testing ancestry.
+		if [[ $local_head != "$head" ]] && ! git -C "$path" cat-file -e "$head^{commit}" 2>/dev/null; then
+			git -C "$path" fetch -q origin "refs/pull/$number/head" 2>/dev/null || true
+		fi
+		if [[ $local_head != "$head" ]] && ! { git -C "$path" cat-file -e "$head^{commit}" 2>/dev/null && git -C "$path" merge-base --is-ancestor "$local_head" "$head"; }; then
+			warn "Kept $path: local commits not in #$number."; kept=$((kept + 1)); continue
+		fi
+		if grep -qE "^($path|$path-merge)(/|$)" <<< "$mounts"; then
+			warn "Kept $path: a running container mounts it."; kept=$((kept + 1)); continue
+		fi
+		removed=$((removed + 1))
+		if [[ -n $dry ]]; then
+			log "Would remove $path (#$number $state)."
+			continue
+		fi
+		"${BASH_SOURCE[0]}" --repo "$WPORG_REPO_NAME" rm "$path" || { warn "Failed to remove $path."; removed=$((removed - 1)); }
+	done < <(git -C "$WPORG_REPO" worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^branch /{print p "\t" substr($2,12)}')
+	ok "$WPORG_REPO_NAME: $([[ -n $dry ]] && echo "would remove" || echo removed) $removed worktrees; kept $kept with a closed PR."
+}
+
 case ${1:-} in
 	new)  shift; cmd_new "$@" ;;
 	rm)   shift; cmd_rm "$@" ;;
 	ls)   cmd_ls ;;
+	prune) shift; cmd_prune "$@" ;;
 	pr)   shift; cmd_pr "$@" ;;
 	path) [[ -n ${2:-} ]] || usage 1; path_for_branch "$2" ;;
 	-h|--help|"") usage ;;
