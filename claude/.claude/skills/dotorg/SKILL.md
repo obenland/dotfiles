@@ -43,6 +43,7 @@ The PR title becomes the first line of the SVN commit message, so it says why th
 - The dotorg sandbox shares the production database and object cache. Nothing automated sends requests to it or applies code to it; `wporg-sandbox` is for you, by hand.
 - No design docs, specs, or notes in the repo. The PR body is where a design lives.
 - American English everywhere: strings, comments, commit messages, PR bodies.
+- Comments are one line. An in-body comment only says what the code can't (a constraint, a non-obvious why, a gotcha), never restates the code, and never stacks `//` lines; use one short `/* */` block only when one line truly can't carry it. Docblocks have a one-line summary and more only when needed.
 - New test files use long `array()` syntax. Other code follows its file.
 - A FreeScout module change bumps `version` in its `module.json`.
 - Subtrees that mirror another repo (`wporg-learn`, `wporg-learn-2024`, and anything whose log shows "Sync with git" commits) are fixed upstream, not here.
