@@ -6,8 +6,10 @@
 # reads, so this hook enforces what they can't. It reads the shell's current
 # directory from the hook input's `cwd`, which follows earlier `cd` calls.
 #
+# Only cd, git and gh commands pass, starting with the program name; everything else is blocked.
+#
 # Every git command must run in a trusted place, decided by reading files, never by running git there:
-#   - a user checkout: a repo root outside ~/claude-retro (the agent can't write there), or
+#   - a user checkout: a repo root outside ~/claude-retro that run.sh listed in RETRO_TRUSTED_REPOS, or
 #   - a genuine linked worktree under ~/claude-retro/worktrees/ whose main repo is a user checkout.
 # Git reads config and hooks from where it runs, so a hand-made .git under the agent-writable
 # worktrees folder could otherwise run arbitrary commands (core.fsmonitor, hooks, uploadpack).
@@ -18,7 +20,7 @@
 #   - git worktree remove [--force] <wt> | list | prune
 #   - git checkout -b claude-retro/<slug>                   (worktree)
 #   - git add [--] <paths>                                  (worktree; no options)
-#   - git commit -F <file under ~/claude-retro/work/>       (worktree)
+#   - git commit -F <file under ~/claude-retro/work/>       (worktree; commit and push also need an absolute core.hooksPath, if any)
 #   - git push [-u] <fork-remote> claude-retro/<slug>       (worktree; remote owned by FORK_OWNER in a real fork)
 #   - gh pr create --draft --repo <upstream> --base <b> --head FORK_OWNER:claude-retro/<slug>
 #       --title "<text>" --body-file <file under ~/claude-retro/work/>  (worktree; <upstream> is one of its remotes)
@@ -70,13 +72,47 @@ inside() {
 	[ -n "$2" ] && [[ "$1/" == "$2"/?* ]]
 }
 
-# Succeeds when a directory is a user checkout: a repo root outside ~/claude-retro.
+# Succeeds when a directory is a user checkout: a repo root outside ~/claude-retro that run.sh
+# listed in RETRO_TRUSTED_REPOS (the repos from today's sessions; the agent can't change the hook's env).
 is_user_checkout() {
-	local dir
+	local dir trusted
 	dir="$(real_dir "$1")" || return 1
 	[ -n "$RETRO" ] || return 1
 	[[ "$dir" == "$RETRO" ]] || inside "$dir" "$RETRO" && return 1
-	[ -d "$dir/.git" ] && [ ! -L "$dir/.git" ] && [ -f "$dir/.git/HEAD" ]
+	[ -d "$dir/.git" ] && [ ! -L "$dir/.git" ] && [ -f "$dir/.git/HEAD" ] || return 1
+	while IFS= read -r trusted; do
+		[ -n "$trusted" ] && [ "$(real_dir "$trusted")" = "$dir" ] && return 0
+	done <<<"${RETRO_TRUSTED_REPOS-}"
+	return 1
+}
+
+# Succeeds when commit and push in the current worktree can't run any git hook. A relative core.hooksPath
+# resolves inside the agent-writable worktree, and even a hook in the user's own hooks dir (pre-commit,
+# lefthook, husky) reads its config from the worktree, which the agent can edit to run any command.
+# The retro never skips hooks (no --no-verify), so a repo with active hooks gets no commit: the diff goes
+# in the report instead. Reads config files with --file; never runs git in the worktree.
+hooks_safe() {
+	local gitdir common value hooks_dir hook
+	gitdir="$(real_dir "$(sed -n '1s/^gitdir: //p' "$(real_dir "$CWD")/.git")")" || return 1
+	common="$(dirname "$(dirname "$gitdir")")"
+	hooks_dir="$common/hooks"
+	for value in \
+		"$(git config --global --get core.hooksPath 2>/dev/null)" \
+		"$(git config --file "$common/config" --get core.hooksPath 2>/dev/null)" \
+		"$(git config --file "$gitdir/config.worktree" --get core.hooksPath 2>/dev/null)"; do
+		[ -z "$value" ] && continue
+		value="${value/#\~\//$HOME/}"
+		[[ "$value" == /* ]] || return 1
+		[[ "$value/" == "$RETRO"/* ]] && return 1
+		hooks_dir="$value"
+	done
+	[ -d "$hooks_dir" ] || return 0
+	for hook in "$hooks_dir"/*; do
+		[ -e "$hook" ] || continue
+		[[ "$hook" == *.sample ]] && continue
+		[ -x "$hook" ] && return 1
+	done
+	return 0
 }
 
 # Succeeds when a directory is the root of a genuine linked worktree under worktrees/ whose main repo is a user checkout.
@@ -125,12 +161,16 @@ remote_url() {
 }
 
 case "$CMD" in
-	*$'\n'*) block "run one command per Bash call, on a single line." ;;
+	*$'\n'* | *$'\r'*) block "run one command per Bash call, on a single line." ;;
 esac
 
-if [[ "$CMD" =~ (^|[^a-z])git[[:space:]] || "$CMD" == *"gh "* ]]; then
-	[[ "$CMD" == *"git -C"* ]] && block "don't use git -C. Run cd <dir> as its own Bash call, then the git command."
-	[[ "$CMD" =~ [\;\&\|\`\<\>\$\\] || "$CMD" == *$'\r'* ]] && block "run each git/gh command as its own Bash call, with no shell operators, redirects, variables or backslashes."
+# Fail closed: only cd, git and gh run, with the program name first and unquoted, so the checks below see exactly what the shell runs.
+[[ "$CMD" =~ ^(cd|git|gh)(\ |$) ]] || block "only cd, git and gh commands are allowed, each starting with the program name. Use Read, Grep and Glob for files."
+[[ "$CMD" =~ [\;\&\|\`\<\>\$\\] ]] && block "run each command as its own Bash call, with no shell operators, redirects, variables or backslashes."
+[[ "$CMD" == *"git -C"* ]] && block "don't use git -C. Run cd <dir> as its own Bash call, then the git command."
+if [[ "$CMD" =~ ^cd ]]; then
+	[[ "$CMD" =~ ^cd\ [^\ \'\"]+$ ]] || block "cd takes one plain path, with no quotes or spaces."
+	exit 0
 fi
 
 if [[ "$CMD" =~ ^git([[:space:]]|$) ]]; then
@@ -173,6 +213,9 @@ fi
 
 if [[ "$CMD" =~ ^git[[:space:]]+(checkout|add|commit|push)([[:space:]]|$) ]]; then
 	[ "$PLACE" = "worktree" ] || block "git ${BASH_REMATCH[1]} only inside a retro worktree under ~/claude-retro/worktrees/<dir>. cd there first (current dir: $CWD)."
+	if [[ "${BASH_REMATCH[1]}" == "commit" || "${BASH_REMATCH[1]}" == "push" ]]; then
+		hooks_safe || block "this repo has git hooks (or a relative core.hooksPath) that could run files from the editable worktree. Skip the PR and put the diff in the report."
+	fi
 fi
 
 if [[ "$CMD" =~ ^git[[:space:]]+checkout([[:space:]]|$) ]]; then
@@ -217,6 +260,7 @@ if [[ "$CMD" =~ ^git([[:space:]]|$) ]]; then
 fi
 
 if [[ "$CMD" =~ ^gh[[:space:]] ]]; then
+	[[ "$CMD" =~ ^gh\ (pr\ create|pr\ list|repo\ view)(\ |$) ]] || block "only gh pr create, gh pr list and gh repo view are allowed."
 	[[ "$CMD" == *"--web"* || "$CMD" =~ (^|\ )-w(\ |$) ]] && block "no --web."
 fi
 

@@ -7,6 +7,21 @@ set -euo pipefail
 
 RETRO_DIR="$HOME/claude-retro"
 
+# Per-machine opt-out: `touch ~/claude-retro/disabled` removes the schedule here and keeps later pulls from re-adding it.
+if [ -e "$RETRO_DIR/disabled" ]; then
+	case "$(uname -s)" in
+		Darwin)
+			launchctl bootout "gui/$(id -u)/local.claude-retro" 2>/dev/null || true
+			rm -f "$HOME/Library/LaunchAgents/local.claude-retro.plist"
+			;;
+		Linux)
+			{ crontab -l 2>/dev/null | grep -v 'claude-retro' || true; } | crontab -
+			;;
+	esac
+	echo "claude-retro is disabled on this machine (~/claude-retro/disabled); schedule removed."
+	exit 0
+fi
+
 chmod +x "$RETRO_DIR/run.sh" "$RETRO_DIR/bin/guard-bash.sh"
 mkdir -p "$RETRO_DIR/logs" "$RETRO_DIR/work" "$RETRO_DIR/reports" "$RETRO_DIR/worktrees"
 

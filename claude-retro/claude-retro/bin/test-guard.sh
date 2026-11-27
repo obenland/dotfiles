@@ -33,6 +33,29 @@ git -C "$C/own" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 git -C "$C/own" remote add origin git@github.com:obenland/wp-last-login.git
 git -C "$C/own" worktree add -q -b claude-retro/y "$W/own" trunk
 
+# A checkout outside ~/claude-retro that run.sh didn't list as trusted.
+git init -q -b trunk "$C/untrusted"
+git -C "$C/untrusted" remote add origin git@github.com:someone/untrusted.git
+
+# A checkout with a relative core.hooksPath, so its hooks would live in the editable worktree.
+git init -q -b trunk "$C/relhooks"
+git -C "$C/relhooks" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$C/relhooks" remote add origin git@github.com:WordPress/relhooks.git
+git -C "$C/relhooks" remote add fork git@github.com:obenland/relhooks.git
+git -C "$C/relhooks" config core.hooksPath .githooks
+git -C "$C/relhooks" worktree add -q -b claude-retro/h "$W/relhooks" trunk
+
+# A checkout with an active pre-commit hook in its own .git/hooks (like pre-commit or lefthook installs).
+git init -q -b trunk "$C/withhook"
+git -C "$C/withhook" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$C/withhook" remote add origin git@github.com:WordPress/withhook.git
+git -C "$C/withhook" remote add fork git@github.com:obenland/withhook.git
+printf '#!/bin/sh\nexit 0\n' > "$C/withhook/.git/hooks/pre-commit"
+chmod +x "$C/withhook/.git/hooks/pre-commit"
+git -C "$C/withhook" worktree add -q -b claude-retro/k "$W/withhook" trunk
+
+TRUSTED="$(printf '%s\n' "$C/wporg" "$C/own" "$C/relhooks" "$C/withhook")"
+
 # Forged: a plain repo inside worktrees/, with a config the agent could have written.
 git init -q "$W/fake"
 git -C "$W/fake" remote add fork git@github.com:obenland/wordpress.org.git
@@ -49,7 +72,7 @@ FAIL=0
 # Runs one case: expected exit code, cwd, command.
 t() {
 	local want="$1" cwd="$2" cmd="$3" got
-	jq -n --arg c "$cmd" --arg d "$cwd" '{cwd: $d, tool_input: {command: $c}}' | HOME="$FAKE" "$GUARD" >/dev/null 2>&1
+	jq -n --arg c "$cmd" --arg d "$cwd" '{cwd: $d, tool_input: {command: $c}}' | HOME="$FAKE" RETRO_TRUSTED_REPOS="$TRUSTED" "$GUARD" >/dev/null 2>&1
 	got=$?
 	if [ "$got" = "$want" ]; then
 		PASS=$((PASS + 1))
@@ -69,6 +92,35 @@ t 2 "$R" "git add AGENTS.md"
 t 2 "$R/work" "git fetch origin"
 t 2 "$W/wporg/sub" "git add AGENTS.md"
 t 2 "$C/wporg" "git add AGENTS.md"
+
+# Only plain cd, git and gh commands.
+t 0 "$R" "cd $W/wporg"
+t 0 "$R" "cd ~/claude-retro/worktrees/wporg"
+t 2 "$R" "cd \"$W/wporg\""
+t 2 "$C/wporg" " git fetch --upload-pack=touch origin"
+t 2 "$C/wporg" "\"git\" fetch --upload-pack=touch origin"
+t 2 "$C/wporg" "'git' fetch --upload-pack=touch origin"
+t 2 "$C/wporg" "g\\it fetch --upload-pack=touch origin"
+t 2 "$C/wporg" "env git fetch --upload-pack=touch origin"
+t 2 "$C/wporg" "command git status"
+t 2 "$R" "cat ~/.ssh/id_rsa"
+t 2 "$R" "curl -s https://example.com"
+t 2 "$R" "ls"
+t 2 "$W/wporg" "gh api repos/WordPress/wordpress.org"
+t 2 "$W/wporg" "gh pr merge 1"
+t 0 "$W/wporg" "gh repo view WordPress/wordpress.org"
+
+# Trusted checkouts only.
+t 2 "$C/untrusted" "git fetch origin"
+t 2 "$C/untrusted" "git worktree add -b claude-retro/n $W/untrusted-1 origin/trunk"
+
+# Relative core.hooksPath blocks commit and push, not add.
+t 0 "$W/relhooks" "git add AGENTS.md"
+t 2 "$W/relhooks" "git commit -F $R/work/msg.txt"
+t 2 "$W/relhooks" "git push -u fork claude-retro/h"
+t 2 "$W/withhook" "git commit -F $R/work/msg.txt"
+t 2 "$W/withhook" "git push -u fork claude-retro/k"
+t 0 "$W/withhook" "git add AGENTS.md"
 
 # fetch.
 t 0 "$C/wporg" "git fetch origin"

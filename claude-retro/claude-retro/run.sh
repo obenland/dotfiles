@@ -109,6 +109,10 @@ done < <(tr '\n' '\0' < "$SESSIONS_FILE" | xargs -0 grep -ho '"cwd":"[^"]*"' 2>/
 
 echo "Repos added as working directories: ${ADD_DIRS[*]-none}"
 
+# The guard hook trusts only these checkouts for git commands. The agent can't change the hook's environment.
+RETRO_TRUSTED_REPOS="$(printf '%s\n' "${ADD_DIRS[@]-}")"
+export RETRO_TRUSTED_REPOS
+
 # With CLAUDE_CODE_SUBPROCESS_ENV_SCRUB set, allow rules must be passed on the command line;
 # the copy in config/settings.json alone is not applied.
 ALLOWED_TOOLS=()

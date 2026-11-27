@@ -9,6 +9,11 @@ packages=(*/)
 mkdir -p "$HOME/claude-retro"
 stow -R "${packages[@]%/}"
 
+# Install or refresh the nightly claude-retro schedule (re-renders the LaunchAgent plist or crontab entry).
+if [ -x "$HOME/claude-retro/install.sh" ]; then
+    "$HOME/claude-retro/install.sh" >/dev/null || echo "claude-retro: install.sh failed"
+fi
+
 # Sync Claude Code plugins from settings.json's enabledPlugins.
 # Installs any enabled plugin that isn't already installed. Idempotent.
 # Silently skipped if claude or jq is unavailable (e.g. fresh machine before Homebrew bootstrap).

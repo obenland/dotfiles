@@ -16,6 +16,7 @@ cd ~/dotfiles
 git config core.hooksPath .githooks
 mkdir -p ~/claude-retro   # keep it a real dir; see claude-retro below
 stow claude claude-retro git zsh vim
+~/claude-retro/install.sh # schedule the nightly retro; later pulls refresh it via post-merge
 
 # Or install selectively
 stow git zsh
@@ -33,15 +34,12 @@ stow git zsh
 
 ### claude-retro
 
-Stowing installs the code and config into `~/claude-retro/`. The schedule is opt-in per machine:
-
-```bash
-~/claude-retro/install.sh   # LaunchAgent at 11:17 pm (macOS) or crontab entry (Linux)
-```
+Stowing installs the code and config into `~/claude-retro/`. `install.sh` schedules it: a LaunchAgent at 11:17 pm (macOS) or a crontab entry (Linux). Run it once on a new machine; after that the `post-merge` hook re-runs it on every pull, so schedule changes propagate.
 
 - `~/claude-retro` must be a real directory before stowing, so stow links its files instead of folding the whole directory into this repo. The `post-merge` hook creates it.
 - Runtime data stays on each machine and out of git: `reports/`, `work/`, `worktrees/`, `logs/`.
-- Each machine reviews only its own sessions. Install the schedule on one machine, or give each machine its own time, so two runs don't race to open the same draft PR.
+- Each machine reviews only its own sessions and writes its own report. If two machines propose the same repo fix the same night, the second push or draft PR fails harmlessly (no force push), and its diff stays in that machine's report.
+- To keep a machine from running it: `touch ~/claude-retro/disabled && ~/claude-retro/install.sh`. That removes the schedule there, and later pulls leave it off. Delete the file and re-run `install.sh` to turn it back on.
 - For unattended auth, run `claude setup-token`, then store the token: `security add-generic-password -U -s claude-retro-oauth-token -a "$(id -un)" -w`. Without it, the job uses the regular sign-in.
 
 ### Zsh file loading order
