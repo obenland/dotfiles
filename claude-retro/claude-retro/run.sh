@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Nightly Claude Code retro: review the past day's session transcripts and
+# Nightly Claude Code retro: review the session transcripts since the last successful run and
 # write a report to ~/claude-retro/reports/YYYY-MM-DD.md.
 #
 # Launched by launchd (macOS) or cron (Linux), neither of which loads the
@@ -17,13 +17,27 @@ CLAUDE_BIN="$HOME/.local/bin/claude"
 RETRO_DIR="$HOME/claude-retro"
 PROJECTS_DIR="$HOME/.claude/projects"
 TODAY="$(date +%F)"
-# Lookback in days. The nightly job uses 1 (the launcher passes no environment); for a one-off longer
-# review run `RETRO_DAYS=7 ~/claude-retro/run.sh`, which writes its own -7d files instead of tonight's.
-RETRO_DAYS="${RETRO_DAYS:-1}"
-[[ "$RETRO_DAYS" =~ ^[1-9][0-9]?$ ]] || { echo "RETRO_DAYS must be a whole number from 1 to 99" >&2; exit 1; }
-SUFFIX=""
-[ "$RETRO_DAYS" = 1 ] || SUFFIX="-${RETRO_DAYS}d"
+RUN_STARTED="$(date -u '+%Y-%m-%dT%H:%M:%S')"
+
+# The nightly window starts at the last successful run, so a missed or failed night isn't lost; it's
+# recorded only after a clean run, where the headless agent can't write. A first run, or a gap longer
+# than MAX_DAYS, falls back to 24 hours or MAX_DAYS.
+if [ "$(uname -s)" = "Darwin" ]; then
+	STATE_DIR="$HOME/Library/Application Support/claude-retro"
+else
+	STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-retro"
+fi
+LAST_RUN_FILE="$STATE_DIR/last-run"
+MAX_DAYS=14
+
+# For a one-off longer review, `RETRO_DAYS=7 ~/claude-retro/run.sh` looks back that many days, writes its
+# own -7d files instead of tonight's, and leaves the nightly window alone. The launcher passes no environment.
+MANUAL_DAYS="${RETRO_DAYS:-}"
+[ -z "$MANUAL_DAYS" ] || [[ "$MANUAL_DAYS" =~ ^[1-9][0-9]?$ ]] || { echo "RETRO_DAYS must be a whole number from 1 to 99" >&2; exit 1; }
+SUFFIX="${MANUAL_DAYS:+-${MANUAL_DAYS}d}"
 SESSIONS_FILE="$RETRO_DIR/work/sessions-$TODAY$SUFFIX.txt"
+DIGEST_FILE="$RETRO_DIR/work/digest-$TODAY$SUFFIX.jsonl"
+HISTORY_FILE="$RETRO_DIR/work/history-$TODAY$SUFFIX.txt"
 REPORT="$RETRO_DIR/reports/$TODAY$SUFFIX.md"
 GUARD="$RETRO_DIR/bin/guard-bash.sh"
 
@@ -74,23 +88,80 @@ export CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
 # Claude Code names a project folder after its path, with every non-alphanumeric character turned into '-'.
 SELF_PROJECT="$PROJECTS_DIR/$(printf '%s' "$RETRO_DIR" | sed 's/[^A-Za-z0-9]/-/g')"
 
-# Claude Code rewrites bookkeeping lines into old transcripts, so mtime alone lists stale sessions.
-# Keep only transcripts whose newest event timestamp (ISO 8601 UTC) falls in the lookback window.
-HOURS=$((RETRO_DAYS * 24))
-CUTOFF="$(date -u -v-"${HOURS}"H '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -u -d "$HOURS hours ago" '+%Y-%m-%dT%H:%M:%S')"
+# Prints the UTC time some hours ago, as YYYY-MM-DDTHH:MM:SS.
+hours_ago() {
+	date -u -v-"$1"H '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -u -d "$1 hours ago" '+%Y-%m-%dT%H:%M:%S'
+}
 
-find "$PROJECTS_DIR" -path "$SELF_PROJECT" -prune -o -name '*.jsonl' -mtime -"$RETRO_DAYS" -print | sort |
+# Prints the epoch seconds of a YYYY-MM-DDTHH:MM:SS UTC time.
+epoch() {
+	date -j -u -f '%Y-%m-%dT%H:%M:%S' "$1" +%s 2>/dev/null || date -u -d "$1" +%s
+}
+
+if [ -n "$MANUAL_DAYS" ]; then
+	CUTOFF="$(hours_ago $((MANUAL_DAYS * 24)))"
+	WINDOW="the last $MANUAL_DAYS day(s), a one-off review"
+else
+	LAST_RUN="$(cat "$LAST_RUN_FILE" 2>/dev/null || true)"
+	FLOOR="$(hours_ago $((MAX_DAYS * 24)))"
+	if [[ "$LAST_RUN" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+		if [[ "$LAST_RUN" < "$FLOOR" ]]; then
+			CUTOFF="$FLOOR"
+			WINDOW="the last $MAX_DAYS days (the last successful run, $LAST_RUN UTC, is older)"
+		else
+			CUTOFF="$LAST_RUN"
+			WINDOW="since the last successful nightly run"
+		fi
+	else
+		CUTOFF="$(hours_ago 24)"
+		WINDOW="the last 24 hours (no earlier successful run recorded)"
+	fi
+fi
+echo "Window: $WINDOW, from $CUTOFF UTC"
+
+# Records this run as the start of the next nightly window. Only for a clean nightly run.
+record_run() {
+	[ -z "$MANUAL_DAYS" ] || return 0
+	mkdir -p "$STATE_DIR"
+	printf '%s\n' "$RUN_STARTED" > "$LAST_RUN_FILE"
+}
+
+# Claude Code rewrites bookkeeping lines into old transcripts, so mtime alone lists stale sessions.
+# mtime only narrows the search; keep transcripts whose newest event timestamp (ISO 8601 UTC) is in the window.
+MTIME_DAYS=$(( ($(date -u +%s) - $(epoch "$CUTOFF")) / 86400 + 2 ))
+
+find "$PROJECTS_DIR" -path "$SELF_PROJECT" -prune -o -name '*.jsonl' -mtime -"$MTIME_DAYS" -print | sort |
 	while IFS= read -r f; do
 		newest="$(grep -o '"timestamp":"[^"]*"' "$f" | cut -d'"' -f4 | sort | tail -1)"
 		[[ "$newest" > "$CUTOFF" ]] && printf '%s\n' "$f"
 	done > "$SESSIONS_FILE" || true
 
 if [ ! -s "$SESSIONS_FILE" ]; then
-	echo "No sessions in the last $RETRO_DAYS day(s)."
+	echo "No sessions in the window."
+	record_run
 	exit 0
 fi
 
 echo "$(wc -l < "$SESSIONS_FILE" | tr -d ' ') transcripts listed in $SESSIONS_FILE"
+
+# Model-free intake: typed messages and friction counts per session, without tool output.
+# A transcript it can't read keeps the window from advancing, so the next run looks again.
+UNREADABLE=""
+python3 -I "$RETRO_DIR/bin/retro-digest.py" --since "$CUTOFF" < "$SESSIONS_FILE" > "$DIGEST_FILE" || {
+	status=$?
+	[ "$status" = 3 ] || exit "$status"
+	UNREADABLE="yes"
+	echo "Some transcripts could not be read; see the log. The window won't advance." >&2
+	notify "Some transcripts could not be read. See ~/claude-retro/logs/."
+}
+
+# What changed in the personal setup lately, so the run can tell applied, reverted and still-open
+# suggestions apart instead of proposing the same thing every night.
+{
+	echo "# ~/dotfiles changes to Claude config in the last $MAX_DAYS days (git log -p)"
+	git -C "$HOME/dotfiles" log --since="$MAX_DAYS days ago" -p --no-color --no-ext-diff \
+		-- claude/.claude/CLAUDE.md claude/.claude/settings.json 2>/dev/null || echo "(no ~/dotfiles history available)"
+} > "$HISTORY_FILE"
 
 # Prints the main checkout of the git repo containing a directory, without running git there.
 repo_root() {
@@ -138,13 +209,23 @@ while IFS= read -r rule; do
 	ALLOWED_TOOLS+=("$rule")
 done < <(jq -r '.permissions.allow[]' "$RETRO_DIR/config/settings.json")
 
+# A re-run on the same day keeps the earlier report next to the new one, so the model never has to
+# move or back up files itself.
+if [ -e "$REPORT" ]; then
+	mv "$REPORT" "${REPORT%.md}-replaced-$(date +%H%M%S).md"
+fi
+
 PROMPT="$(cat "$RETRO_DIR/prompt.md")
 
 ---
 Run details (added by run.sh):
 - Date: $TODAY
-- Lookback: the last $RETRO_DAYS day(s), transcripts with an event since $CUTOFF UTC
+- Window: $WINDOW, events since $CUTOFF UTC
+- Digest (start here): $DIGEST_FILE
 - Transcript list: $SESSIONS_FILE
+- Setup history: $HISTORY_FILE
+- Earlier reports: $RETRO_DIR/reports/
+- Unreadable transcripts: ${UNREADABLE:-none}
 - Write the report to: $REPORT"
 
 cd "$RETRO_DIR"
@@ -185,5 +266,7 @@ if [ "${FINDINGS:-0}" -gt 0 ]; then
 else
 	notify "Quiet day, no findings. Report: reports/$(basename "$REPORT")"
 fi
+
+[ -n "$UNREADABLE" ] || record_run
 
 echo "[$(date '+%F %T')] retro done: findings=${FINDINGS:-?} prs=${PRS:-?}"
