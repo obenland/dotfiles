@@ -20,7 +20,8 @@
 #   - git worktree remove [--force] <wt> | list | prune
 #   - git checkout -b claude-retro/<slug>                   (worktree)
 #   - git add [--] <paths>                                  (worktree; no options)
-#   - git commit -F <file under ~/claude-retro/work/>       (worktree; commit and push also need an absolute core.hooksPath, if any)
+#   - git commit -F <file under ~/claude-retro/work/>       (worktree)
+#   - checkout, commit, push and worktree add only in repos with no active git hooks
 #   - git push [-u] <fork-remote> claude-retro/<slug>       (worktree; remote owned by FORK_OWNER in a real fork)
 #   - gh pr create --draft --repo <upstream> --base <b> --head FORK_OWNER:claude-retro/<slug>
 #       --title "<text>" --body-file <file under ~/claude-retro/work/>  (worktree; <upstream> is one of its remotes)
@@ -86,27 +87,29 @@ is_user_checkout() {
 	return 1
 }
 
-# Succeeds when commit and push in the current worktree can't run any git hook. A relative core.hooksPath
+# Succeeds when git commands run in a directory can't trigger any git hook. A relative core.hooksPath
 # resolves inside the agent-writable worktree, and even a hook in the user's own hooks dir (pre-commit,
 # lefthook, husky) reads its config from the worktree, which the agent can edit to run any command.
-# The retro never skips hooks (no --no-verify), so a repo with active hooks gets no commit: the diff goes
-# in the report instead. Reads config files with --file; never runs git in the worktree.
+# The retro never skips hooks (no --no-verify), so in a repo with active hooks it doesn't check out,
+# commit or push; the diff goes in the report instead.
+# Only call on a directory that already passed is_user_checkout or is_retro_worktree: git then reads only
+# trusted config, and asking git itself resolves include/includeIf exactly as the real command will.
+# Neither rev-parse --git-path nor this lookup runs hooks or fsmonitor.
 hooks_safe() {
-	local gitdir common value hooks_dir hook
-	gitdir="$(real_dir "$(sed -n '1s/^gitdir: //p' "$(real_dir "$CWD")/.git")")" || return 1
-	common="$(dirname "$(dirname "$gitdir")")"
-	hooks_dir="$common/hooks"
-	for value in \
-		"$(git config --global --get core.hooksPath 2>/dev/null)" \
-		"$(git config --file "$common/config" --get core.hooksPath 2>/dev/null)" \
-		"$(git config --file "$gitdir/config.worktree" --get core.hooksPath 2>/dev/null)"; do
-		[ -z "$value" ] && continue
+	local hooks_dir hook value
+	# A relative hooksPath resolves against whichever worktree git runs in, including one worktree add is
+	# about to create from a branch the agent may have pushed, so any relative value is unsafe.
+	value="$(cd "$1" && git config --get core.hooksPath 2>/dev/null)"
+	if [ -n "$value" ]; then
 		value="${value/#\~\//$HOME/}"
 		[[ "$value" == /* ]] || return 1
-		[[ "$value/" == "$RETRO"/* ]] && return 1
-		hooks_dir="$value"
-	done
+	fi
+	hooks_dir="$(cd "$1" && git rev-parse --path-format=absolute --git-path hooks 2>/dev/null)" || return 1
+	[ -n "$hooks_dir" ] || return 1
+	[[ "$hooks_dir/" == "$RETRO"/* ]] && return 1
 	[ -d "$hooks_dir" ] || return 0
+	hooks_dir="$(real_dir "$hooks_dir")" || return 1
+	[[ "$hooks_dir/" == "$RETRO"/* ]] && return 1
 	for hook in "$hooks_dir"/*; do
 		[ -e "$hook" ] || continue
 		[[ "$hook" == *.sample ]] && continue
@@ -197,6 +200,7 @@ if [[ "$CMD" =~ ^git[[:space:]]+worktree([[:space:]]|$) ]]; then
 	remove_re='^git worktree remove (--force )?([^ ]+)$'
 	if [[ "$CMD" =~ $add_re ]]; then
 		[ "$PLACE" = "checkout" ] || block "run git worktree add from the user's checkout."
+		hooks_safe "$CWD" || block "this repo has git hooks (or a relative core.hooksPath) that could run files from the editable worktree. Skip the PR and put the diff in the report."
 		target="$(abs_path "${BASH_REMATCH[1]}")"
 		parent="$(real_dir "$(dirname "$target")")" || block "worktrees go under ~/claude-retro/worktrees/<name>."
 		[ "$parent" = "$WORKTREES" ] && [[ "$(basename "$target")" =~ ^[A-Za-z0-9._-]+$ ]] && [[ "$(basename "$target")" != .* ]] \
@@ -213,8 +217,8 @@ fi
 
 if [[ "$CMD" =~ ^git[[:space:]]+(checkout|add|commit|push)([[:space:]]|$) ]]; then
 	[ "$PLACE" = "worktree" ] || block "git ${BASH_REMATCH[1]} only inside a retro worktree under ~/claude-retro/worktrees/<dir>. cd there first (current dir: $CWD)."
-	if [[ "${BASH_REMATCH[1]}" == "commit" || "${BASH_REMATCH[1]}" == "push" ]]; then
-		hooks_safe || block "this repo has git hooks (or a relative core.hooksPath) that could run files from the editable worktree. Skip the PR and put the diff in the report."
+	if [[ "${BASH_REMATCH[1]}" != "add" ]]; then
+		hooks_safe "$CWD" || block "this repo has git hooks (or a relative core.hooksPath) that could run files from the editable worktree. Skip the PR and put the diff in the report."
 	fi
 fi
 

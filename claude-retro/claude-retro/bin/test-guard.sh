@@ -54,7 +54,16 @@ printf '#!/bin/sh\nexit 0\n' > "$C/withhook/.git/hooks/pre-commit"
 chmod +x "$C/withhook/.git/hooks/pre-commit"
 git -C "$C/withhook" worktree add -q -b claude-retro/k "$W/withhook" trunk
 
-TRUSTED="$(printf '%s\n' "$C/wporg" "$C/own" "$C/relhooks" "$C/withhook")"
+# A checkout whose relative core.hooksPath comes in through an [include], which a plain --file read would miss.
+git init -q -b trunk "$C/inchooks"
+git -C "$C/inchooks" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$C/inchooks" remote add origin git@github.com:WordPress/inchooks.git
+git -C "$C/inchooks" remote add fork git@github.com:obenland/inchooks.git
+printf '[core]\n\thooksPath = .githooks\n' > "$C/inchooks.extra"
+git -C "$C/inchooks" config include.path "$C/inchooks.extra"
+git -C "$C/inchooks" worktree add -q -b claude-retro/i "$W/inchooks" trunk
+
+TRUSTED="$(printf '%s\n' "$C/wporg" "$C/own" "$C/relhooks" "$C/withhook" "$C/inchooks")"
 
 # Forged: a plain repo inside worktrees/, with a config the agent could have written.
 git init -q "$W/fake"
@@ -121,6 +130,14 @@ t 2 "$W/relhooks" "git push -u fork claude-retro/h"
 t 2 "$W/withhook" "git commit -F $R/work/msg.txt"
 t 2 "$W/withhook" "git push -u fork claude-retro/k"
 t 0 "$W/withhook" "git add AGENTS.md"
+t 2 "$W/withhook" "git checkout -b claude-retro/k2"
+t 2 "$W/relhooks" "git checkout -b claude-retro/h2"
+t 2 "$C/withhook" "git worktree add -b claude-retro/k3 $W/withhook-2 trunk"
+t 2 "$C/relhooks" "git worktree add -B claude-retro/h $W/relhooks-2 fork/claude-retro/h"
+t 2 "$W/inchooks" "git commit -F $R/work/msg.txt"
+t 2 "$W/inchooks" "git checkout -b claude-retro/i2"
+t 2 "$C/inchooks" "git worktree add -b claude-retro/i3 $W/inchooks-2 trunk"
+t 0 "$C/withhook" "git fetch origin"
 
 # fetch.
 t 0 "$C/wporg" "git fetch origin"
