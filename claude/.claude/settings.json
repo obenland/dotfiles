@@ -191,6 +191,12 @@
         "source": "github",
         "repo": "anthropics/skills"
       }
+    },
+    "automattic-claude-code-plugins": {
+      "source": {
+        "source": "git",
+        "url": "git@github.a8c.com:Automattic/claude-code-plugins.git"
+      }
     }
   },
   "feedbackDrafts": "off",
