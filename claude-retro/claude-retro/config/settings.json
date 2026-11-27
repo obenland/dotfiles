@@ -28,6 +28,8 @@
       "Edit(~/claude-retro/launchd/**)",
       "Edit(~/claude-retro/run.sh)",
       "Edit(~/claude-retro/prompt.md)",
+      "Edit(~/claude-retro/worktrees/**/.git/**)",
+      "Edit(~/claude-retro/worktrees/**/.git)",
       "Bash(git * --no-verify*)",
       "Bash(git push * --force*)",
       "Bash(git push * -f*)",

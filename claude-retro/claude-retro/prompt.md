@@ -44,7 +44,7 @@ Only Read, Grep, Glob, Edit/Write (under ~/claude-retro/reports, work and worktr
   - `cd <wt>`, then `git add <files>`, then `git commit -F <file>`
   - From inside `<wt>`: `git push -u <fork-remote> claude-retro/<slug>` (exactly this shape; a hook checks the remote is your fork)
   - `gh pr list --repo <upstream-owner>/<repo> --author @me --state open --search "Claude retro in:title"`
-  - `gh pr create --draft --repo <upstream-owner>/<repo> --base <default-branch> --head obenland:claude-retro/<slug> --title "Claude retro: <summary>" --body-file <file>`
+  - From inside `<wt>`: `gh pr create --draft --repo <upstream-owner>/<repo> --base <default-branch> --head obenland:claude-retro/<slug> --title "Claude retro: <summary>" --body-file <file>` (exactly these flags in this order; the body file must be under ~/claude-retro/work/, and the title can't contain `"`, `$` or `\`)
   - `cd <repo>`, then `git worktree remove <wt>`
-- git add, commit, checkout and push only work inside ~/claude-retro/worktrees/; Edit only works under ~/claude-retro/reports, work and worktrees.
+- These are the only git commands a hook allows; anything else (`git status`, `git log`, `git diff`, `git config`, options on `git add`) is blocked. git runs only at the root of a user checkout or of a retro worktree, and add, commit, checkout and push only in the worktree. Write `<wt>` as an absolute or `~/` path, and pass `git commit -F` a file under ~/claude-retro/work/. Edit only works under ~/claude-retro/reports, work and worktrees, and never on `.git`.
 - Never use `git -C`, `--no-verify` or `--force` (the one exception: `git worktree remove --force <wt>` for a retro worktree you're abandoning). If a commit hook fails, skip that PR and put the diff in the report.
