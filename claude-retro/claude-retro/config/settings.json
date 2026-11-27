@@ -5,42 +5,20 @@
       "Read(~/.claude/**)",
       "Read(~/dotfiles/**)",
       "Edit(~/claude-retro/reports/**)",
-      "Edit(~/claude-retro/work/**)",
-      "Edit(~/claude-retro/worktrees/**)",
-      "Bash(cd *)",
-      "Bash(git fetch *)",
-      "Bash(git worktree *)",
-      "Bash(git checkout -b *)",
-      "Bash(git add *)",
-      "Bash(git commit *)",
-      "Bash(git push * claude-retro/*)",
-      "Bash(gh pr create --draft *)",
-      "Bash(gh pr list *)",
-      "Bash(gh repo view *)"
+      "Edit(~/claude-retro/work/**)"
     ],
     "deny": [
+      "Bash",
       "WebFetch",
       "WebSearch",
+      "Agent",
       "Edit(~/claude-retro/.claude/**)",
       "Edit(~/claude-retro/config/**)",
       "Edit(~/claude-retro/bin/**)",
       "Edit(~/claude-retro/launchd/**)",
       "Edit(~/claude-retro/run.sh)",
       "Edit(~/claude-retro/prompt.md)",
-      "Edit(~/claude-retro/worktrees/**/.git/**)",
-      "Edit(~/claude-retro/worktrees/**/.git)",
-      "Bash(git * --no-verify*)",
-      "Bash(git push * --force*)",
-      "Bash(git push * -f*)",
-      "Bash(gh pr ready *)",
-      "Bash(gh pr merge *)",
-      "Bash(env*)",
-      "Bash(printenv*)",
-      "Bash(echo *)",
-      "Bash(printf *)",
-      "Bash(set)",
-      "Bash(export*)",
-      "Bash(declare*)",
+      "Edit(~/claude-retro/worktrees/**)",
       "Read(~/.ssh/**)",
       "Read(~/.aws/**)",
       "Read(~/.gnupg/**)",
@@ -54,18 +32,5 @@
       "Read(~/.bash_history)"
     ]
   },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/claude-retro/bin/guard-bash.sh",
-            "timeout": 10
-          }
-        ]
-      }
-    ]
-  }
+  "disableAllHooks": true
 }

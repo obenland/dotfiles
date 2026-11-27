@@ -22,7 +22,7 @@ if [ -e "$RETRO_DIR/disabled" ]; then
 	exit 0
 fi
 
-chmod +x "$RETRO_DIR/run.sh" "$RETRO_DIR/bin/guard-bash.sh"
+chmod +x "$RETRO_DIR/run.sh" "$RETRO_DIR/bin/apply-proposals.sh" "$RETRO_DIR/bin/repo-remotes.sh"
 mkdir -p "$RETRO_DIR/logs" "$RETRO_DIR/work" "$RETRO_DIR/reports" "$RETRO_DIR/worktrees"
 
 case "$(uname -s)" in

@@ -8,7 +8,8 @@
 
 set -euo pipefail
 
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# MacGPG2 provides the gpg2 that commit signing calls.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/local/MacGPG2/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # claude needs USER to find its Keychain sign-in; launchd and env -i may not set it.
 export USER="${USER:-$(id -un)}"
@@ -38,14 +39,19 @@ SUFFIX="${MANUAL_DAYS:+-${MANUAL_DAYS}d}"
 SESSIONS_FILE="$RETRO_DIR/work/sessions-$TODAY$SUFFIX.txt"
 DIGEST_FILE="$RETRO_DIR/work/digest-$TODAY$SUFFIX.jsonl"
 HISTORY_FILE="$RETRO_DIR/work/history-$TODAY$SUFFIX.txt"
+REPOS_FILE="$RETRO_DIR/work/repos-$TODAY$SUFFIX.txt"
+RETRO_PRS_FILE="$RETRO_DIR/work/retro-prs-$TODAY$SUFFIX.txt"
+PROPOSALS_DIR="$RETRO_DIR/work/proposals-$TODAY$SUFFIX"
+PRS_FILE="$RETRO_DIR/work/prs-$TODAY$SUFFIX.txt"
 REPORT="$RETRO_DIR/reports/$TODAY$SUFFIX.md"
-GUARD="$RETRO_DIR/bin/guard-bash.sh"
+BIN="$RETRO_DIR/bin"
 
 # Posts a desktop notification (macOS, or notify-send on Linux).
 notify() {
 	local msg="$1"
 	if command -v osascript >/dev/null 2>&1; then
-		osascript -e "display notification \"${msg//\"/\\\"}\" with title \"Claude retro\"" || true
+		# The text goes in as an argument, never into the script itself.
+		osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "Claude retro"' -e 'end run' "$msg" >/dev/null || true
 	elif command -v notify-send >/dev/null 2>&1; then
 		notify-send "Claude retro" "$msg" || true
 	fi
@@ -55,8 +61,9 @@ trap 'notify "Retro run failed. See ~/claude-retro/logs/."' ERR
 
 mkdir -p "$RETRO_DIR/work" "$RETRO_DIR/reports" "$RETRO_DIR/worktrees" "$RETRO_DIR/logs"
 
-# Fail closed: never start the headless run without the push/PR guard hook.
-[ -x "$GUARD" ] || { echo "Missing or non-executable $GUARD" >&2; exit 1; }
+for script in apply-proposals.sh repo-remotes.sh; do
+	[ -x "$BIN/$script" ] || { echo "Missing or non-executable $BIN/$script" >&2; exit 1; }
+done
 
 echo "[$(date '+%F %T')] retro start"
 
@@ -82,7 +89,7 @@ else
 fi
 unset TOKEN
 
-# Strip credentials, including the token above, from Bash and hook subprocesses.
+# Strip credentials, including the token above, from any subprocess Claude starts.
 export CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
 
 # Claude Code names a project folder after its path, with every non-alphanumeric character turned into '-'.
@@ -184,8 +191,9 @@ repo_root() {
 	done
 }
 
-# Repos the day's sessions ran in, added as working directories so Claude can cd into
-# them for git worktree/fetch. Edit rules still cover only ~/claude-retro, so they stay read-only.
+# Repos the day's sessions ran in, added as working directories so Claude can read their AGENTS.md,
+# CLAUDE.md and .git/config. Edit rules cover only ~/claude-retro, so they stay read-only. They are also
+# the only repos apply-proposals.sh opens PRs for.
 ADD_DIRS=()
 while IFS= read -r dir; do
 	[ -d "$dir" ] || continue
@@ -197,10 +205,32 @@ while IFS= read -r dir; do
 done < <(tr '\n' '\0' < "$SESSIONS_FILE" | xargs -0 grep -ho '"cwd":"[^"]*"' 2>/dev/null | sed 's/^"cwd":"//; s/"$//' | sort -u)
 
 echo "Repos added as working directories: ${ADD_DIRS[*]-none}"
+printf '%s\n' "${ADD_DIRS[@]-}" > "$REPOS_FILE"
 
-# The guard hook trusts only these checkouts for git commands. The agent can't change the hook's environment.
-RETRO_TRUSTED_REPOS="$(printf '%s\n' "${ADD_DIRS[@]-}")"
-export RETRO_TRUSTED_REPOS
+# limit <seconds> <command...>: a time limit for network calls.
+limit() {
+	local secs="$1"
+	shift
+	perl -e 'alarm shift @ARGV; exec @ARGV or die "exec failed: $!\n"' "$secs" "$@"
+}
+
+# Past retro PRs in those repos, so the run can tell open, accepted and declined suggestions apart.
+{
+	echo "# Retro PRs in tonight's repos (open ones get new changes added; closed unmerged ones were declined)"
+	for root in "${ADD_DIRS[@]-}"; do
+		[ -n "$root" ] || continue
+		IFS=$'\t' read -r _ base_slug _ _ < <("$BIN/repo-remotes.sh" "$root" 2>/dev/null) || continue
+		echo
+		echo "## $root ($base_slug)"
+		limit 60 gh pr list --repo "$base_slug" --author "@me" --state all --limit 30 --search 'in:title "Claude retro:"' \
+			--json number,state,isDraft,title,url,createdAt,closedAt \
+			--jq '.[] | "#\(.number) \(.state)\(if .isDraft then " draft" else "" end) \(.createdAt[:10]) \(.title) \(.url)"' \
+			2>&1 || echo "(couldn't list PRs)"
+	done
+} > "$RETRO_PRS_FILE"
+
+mkdir -p "$PROPOSALS_DIR"
+find "$PROPOSALS_DIR" -mindepth 1 -delete
 
 # With CLAUDE_CODE_SUBPROCESS_ENV_SCRUB set, allow rules must be passed on the command line;
 # the copy in config/settings.json alone is not applied.
@@ -224,6 +254,9 @@ Run details (added by run.sh):
 - Digest (start here): $DIGEST_FILE
 - Transcript list: $SESSIONS_FILE
 - Setup history: $HISTORY_FILE
+- Past retro PRs: $RETRO_PRS_FILE
+- Repos you may propose PRs for: $REPOS_FILE
+- PR proposals go in: $PROPOSALS_DIR/
 - Earlier reports: $RETRO_DIR/reports/
 - Unreadable transcripts: ${UNREADABLE:-none}
 - Write the report to: $REPORT"
@@ -232,19 +265,20 @@ cd "$RETRO_DIR"
 
 # --allowedTools: the allow rules from config/settings.json (see above).
 # --add-dir: the day's repos, read-only (see above).
-# --settings: the retro's own allow/deny rules and guard hook. Passed explicitly
+# --settings: the retro's own allow/deny rules. Passed explicitly
 #   because a project .claude/settings.json is ignored until the folder is trusted.
 # --setting-sources project: skip ~/.claude/settings.json, so its broad allow
 #   rules, MCP servers and plugins don't apply.
 # --strict-mcp-config with no --mcp-config: no MCP servers at all.
-# --tools: only these built-in tools exist in the session (no WebFetch/WebSearch).
+# --tools: only these built-in tools exist in the session: no Bash, no web, no subagents.
+#   apply-proposals.sh does the git and GitHub steps afterwards.
 # --permission-mode dontAsk: anything not in the allow list is denied, never prompted.
 "$CLAUDE_BIN" -p "$PROMPT" \
 	--settings "$RETRO_DIR/config/settings.json" \
 	--setting-sources project \
 	--strict-mcp-config \
-	--tools "Read,Grep,Glob,Edit,Write,Bash" \
-	--disallowedTools "WebFetch" "WebSearch" "mcp__*" \
+	--tools "Read,Grep,Glob,Edit,Write" \
+	--disallowedTools "Bash" "WebFetch" "WebSearch" "mcp__*" \
 	--allowedTools "${ALLOWED_TOOLS[@]}" \
 	${ADD_DIRS[@]+--add-dir "${ADD_DIRS[@]}"} \
 	--permission-mode dontAsk \
@@ -257,9 +291,23 @@ if [ ! -f "$REPORT" ]; then
 	exit 1
 fi
 
-# The prompt asks for a first line like: <!-- retro: findings=3 prs=1 -->
+# The prompt asks for a first line like: <!-- retro: findings=3 -->
 FINDINGS="$(sed -n '1s/.*findings=\([0-9]*\).*/\1/p' "$REPORT")"
-PRS="$(sed -n '1s/.*prs=\([0-9]*\).*/\1/p' "$REPORT")"
+
+# Proposals become draft PRs here, without the Claude token in the environment of git hooks.
+# The run can write anywhere in work/, so the repo list and PR list are rewritten from this script's own state.
+unset CLAUDE_CODE_OAUTH_TOKEN
+printf '%s\n' "${ADD_DIRS[@]-}" > "$REPOS_FILE"
+rm -f "$PRS_FILE"
+"$BIN/apply-proposals.sh" "$PROPOSALS_DIR" "$REPOS_FILE" "$REPORT" "$PRS_FILE" ||
+	echo "apply-proposals.sh failed; see above." >&2
+PRS=0
+[ ! -s "$PRS_FILE" ] || PRS="$(wc -l < "$PRS_FILE" | tr -d ' ')"
+
+# Record the PR count in the marker line too, so the report alone says what happened.
+if [ -n "$FINDINGS" ]; then
+	sed -i.bak "1s/.*/<!-- retro: findings=$FINDINGS prs=$PRS -->/" "$REPORT" && rm -f "$REPORT.bak"
+fi
 
 if [ "${FINDINGS:-0}" -gt 0 ]; then
 	notify "${FINDINGS} finding(s), ${PRS:-0} draft PR(s). Report: reports/$(basename "$REPORT")"
