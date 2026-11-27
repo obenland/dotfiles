@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.claude-retro</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>@HOME@/claude-retro/run.sh</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>@HOME@/claude-retro</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>HOME</key>
+		<string>@HOME@</string>
+		<key>USER</key>
+		<string>@USER@</string>
+	</dict>
+
+	<!-- 11:17 pm local time (America/Chicago). Runs on wake if the Mac was asleep at that time. -->
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>23</integer>
+		<key>Minute</key>
+		<integer>17</integer>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>@HOME@/claude-retro/logs/retro.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/claude-retro/logs/retro.err.log</string>
+
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>

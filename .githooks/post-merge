@@ -5,6 +5,8 @@
 set -e
 cd "$(git rev-parse --show-toplevel)"
 packages=(*/)
+# claude-retro writes runtime data (reports, logs, worktrees) into ~/claude-retro; keep it a real dir so stow links its files instead of folding the whole dir into the repo.
+mkdir -p "$HOME/claude-retro"
 stow -R "${packages[@]%/}"
 
 # Sync Claude Code plugins from settings.json's enabledPlugins.

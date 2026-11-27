@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Edit(~/claude-retro/reports/**)",
+      "Edit(~/claude-retro/work/**)",
+      "Edit(~/claude-retro/worktrees/**)",
+      "Bash(cd *)",
+      "Bash(git fetch *)",
+      "Bash(git worktree *)",
+      "Bash(git checkout -b *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push * claude-retro/*)",
+      "Bash(gh pr create --draft *)",
+      "Bash(gh pr list *)",
+      "Bash(gh repo view *)"
+    ],
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Edit(~/claude-retro/.claude/**)",
+      "Edit(~/claude-retro/config/**)",
+      "Edit(~/claude-retro/bin/**)",
+      "Edit(~/claude-retro/launchd/**)",
+      "Edit(~/claude-retro/run.sh)",
+      "Edit(~/claude-retro/prompt.md)",
+      "Bash(git * --no-verify*)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f*)",
+      "Bash(gh pr ready *)",
+      "Bash(gh pr merge *)",
+      "Bash(env*)",
+      "Bash(printenv*)",
+      "Bash(echo *)",
+      "Bash(printf *)",
+      "Bash(set)",
+      "Bash(export*)",
+      "Bash(declare*)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.netrc)",
+      "Read(~/.npmrc)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.config/gh/**)",
+      "Read(~/.claude/.credentials.json)",
+      "Read(~/.claude.json)",
+      "Read(~/.zsh_history)",
+      "Read(~/.bash_history)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/claude-retro/bin/guard-bash.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

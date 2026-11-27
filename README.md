@@ -14,7 +14,8 @@ git clone git@github.com:obenland/dotfiles.git ~/dotfiles
 # Install all packages
 cd ~/dotfiles
 git config core.hooksPath .githooks
-stow claude git zsh vim
+mkdir -p ~/claude-retro   # keep it a real dir; see claude-retro below
+stow claude claude-retro git zsh vim
 
 # Or install selectively
 stow git zsh
@@ -28,6 +29,20 @@ stow git zsh
 | `git` | `.gitconfig`, `.gitignore_global` | Git identity, aliases, signing, global ignores |
 | `zsh` | `.zshenv`, `.zprofile`, `.zshrc` | Shell environment, login setup, interactive config |
 | `vim` | `.vimrc` | Vim editor settings |
+| `claude-retro` | `claude-retro/` | Nightly headless review of the day's Claude Code sessions |
+
+### claude-retro
+
+Stowing installs the code and config into `~/claude-retro/`. The schedule is opt-in per machine:
+
+```bash
+~/claude-retro/install.sh   # LaunchAgent at 11:17 pm (macOS) or crontab entry (Linux)
+```
+
+- `~/claude-retro` must be a real directory before stowing, so stow links its files instead of folding the whole directory into this repo. The `post-merge` hook creates it.
+- Runtime data stays on each machine and out of git: `reports/`, `work/`, `worktrees/`, `logs/`.
+- Each machine reviews only its own sessions. Install the schedule on one machine, or give each machine its own time, so two runs don't race to open the same draft PR.
+- For unattended auth, run `claude setup-token`, then store the token: `security add-generic-password -U -s claude-retro-oauth-token -a "$(id -un)" -w`. Without it, the job uses the regular sign-in.
 
 ### Zsh file loading order
 
