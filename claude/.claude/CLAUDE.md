@@ -28,8 +28,9 @@ Review ~/.claude/settings.json for global settings.
 ## Standards
 
 - WordPress coding standards. Follow each project's `.editorconfig`.
-- New PHP files (including tests) must pass `phpcs` against the WordPress standard with zero errors *and* zero warnings, and must declare `declare( strict_types = 1 );` after the file docblock. Give everything they define explicit parameter and return types. Don't retrofit either onto pre-existing files.
+- New PHP files (including tests) must pass `phpcs` against the repo's phpcs config (phpcs.xml.dist or similar; the WordPress standard only as fallback) with zero errors *and* zero warnings, and must declare `declare( strict_types = 1 );` after the file docblock. Give everything they define explicit parameter and return types. Don't retrofit either onto pre-existing files.
 - Comment style (PHP, JS, SCSS/CSS, including tests). Prefer a single-line comment; only go multi-line if one line truly can't carry it:
+  - Inline/in-body comments only when the code can't speak for itself — a constraint, a non-obvious "why", or a gotcha worth flagging. Never to restate what the code does. When one is warranted, distill it to its essence — one line wherever possible. (Docblocks below stay required regardless.)
   - `/** */` docblocks on every function, method, class, property, constant, and file header — with aligned `@param`/`@return`/`@since`/`@access` tags as appropriate.
   - `/* */` (single asterisk, ` * ` continuations) for multi-line comments inside a function body.
   - `//` only for single-line comments. Never stack two or more `//` lines — if you need more than one line, use `/* */`.
@@ -47,3 +48,7 @@ Review ~/.claude/settings.json for global settings.
 - Start sessions by reading `.claude/_NEXT_SESSION_MEMO.md` if it exists.
 - Use `/wrap` to end sessions properly.
 - Use `/sup` for quick context recovery.
+
+## Shell
+
+- Always use absolute paths in shell commands. Never prefix a command with `cd <dir> &&` or `cd <dir>;` — especially not before `grep -r`, `find`, or any write. This applies to subagents and forks too. A cd-prefixed command trips the permission hooks and requires manual approval.
