@@ -1,4 +1,4 @@
-You are reviewing my Claude Code sessions from the last 24 hours. The transcript paths are listed in the file named under "Run details" at the end of this prompt. Each file is JSONL. The project folder name encodes the repo path the session ran in; each line's `cwd` field gives the exact path.
+You are reviewing my Claude Code sessions from the lookback window given under "Run details" at the end of this prompt (usually the last 24 hours). The transcript paths are listed in the file named under "Run details" at the end of this prompt. Each file is JSONL. The project folder name encodes the repo path the session ran in; each line's `cwd` field gives the exact path.
 
 Look for friction:
 - places where I corrected Claude ("no", "actually", "I said", undoing its work)

@@ -17,8 +17,14 @@ CLAUDE_BIN="$HOME/.local/bin/claude"
 RETRO_DIR="$HOME/claude-retro"
 PROJECTS_DIR="$HOME/.claude/projects"
 TODAY="$(date +%F)"
-SESSIONS_FILE="$RETRO_DIR/work/sessions-$TODAY.txt"
-REPORT="$RETRO_DIR/reports/$TODAY.md"
+# Lookback in days. The nightly job uses 1 (the launcher passes no environment); for a one-off longer
+# review run `RETRO_DAYS=7 ~/claude-retro/run.sh`, which writes its own -7d files instead of tonight's.
+RETRO_DAYS="${RETRO_DAYS:-1}"
+[[ "$RETRO_DAYS" =~ ^[1-9][0-9]?$ ]] || { echo "RETRO_DAYS must be a whole number from 1 to 99" >&2; exit 1; }
+SUFFIX=""
+[ "$RETRO_DAYS" = 1 ] || SUFFIX="-${RETRO_DAYS}d"
+SESSIONS_FILE="$RETRO_DIR/work/sessions-$TODAY$SUFFIX.txt"
+REPORT="$RETRO_DIR/reports/$TODAY$SUFFIX.md"
 GUARD="$RETRO_DIR/bin/guard-bash.sh"
 
 # Posts a desktop notification (macOS, or notify-send on Linux).
@@ -40,6 +46,17 @@ mkdir -p "$RETRO_DIR/work" "$RETRO_DIR/reports" "$RETRO_DIR/worktrees" "$RETRO_D
 
 echo "[$(date '+%F %T')] retro start"
 
+# On macOS, repos in ~/Documents are readable only if the launcher has Full Disk Access. Without it the
+# review silently loses repo context, so say so loudly and keep going.
+if [ "$(uname -s)" = "Darwin" ] && [ -d "$HOME/Documents" ]; then
+	if ls "$HOME/Documents" >/dev/null 2>&1; then
+		echo "~/Documents access: ok"
+	else
+		echo "~/Documents access: denied. Grant Full Disk Access to ~/Library/Application Support/claude-retro/claude-retro-launcher." >&2
+		notify "No access to ~/Documents. Grant the retro launcher Full Disk Access."
+	fi
+fi
+
 # Use the long-lived token from `claude setup-token`, stored in the login Keychain,
 # so the run doesn't depend on the interactive sign-in. Without it, fall back to that sign-in.
 if command -v security >/dev/null 2>&1 \
@@ -58,17 +75,18 @@ export CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
 SELF_PROJECT="$PROJECTS_DIR/$(printf '%s' "$RETRO_DIR" | sed 's/[^A-Za-z0-9]/-/g')"
 
 # Claude Code rewrites bookkeeping lines into old transcripts, so mtime alone lists stale sessions.
-# Keep only transcripts whose newest event timestamp (ISO 8601 UTC) falls in the last 24 hours.
-CUTOFF="$(date -u -v-24H '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%S')"
+# Keep only transcripts whose newest event timestamp (ISO 8601 UTC) falls in the lookback window.
+HOURS=$((RETRO_DAYS * 24))
+CUTOFF="$(date -u -v-"${HOURS}"H '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -u -d "$HOURS hours ago" '+%Y-%m-%dT%H:%M:%S')"
 
-find "$PROJECTS_DIR" -path "$SELF_PROJECT" -prune -o -name '*.jsonl' -mtime -1 -print | sort |
+find "$PROJECTS_DIR" -path "$SELF_PROJECT" -prune -o -name '*.jsonl' -mtime -"$RETRO_DAYS" -print | sort |
 	while IFS= read -r f; do
 		newest="$(grep -o '"timestamp":"[^"]*"' "$f" | cut -d'"' -f4 | sort | tail -1)"
 		[[ "$newest" > "$CUTOFF" ]] && printf '%s\n' "$f"
 	done > "$SESSIONS_FILE" || true
 
 if [ ! -s "$SESSIONS_FILE" ]; then
-	echo "No sessions in the last 24 hours."
+	echo "No sessions in the last $RETRO_DAYS day(s)."
 	exit 0
 fi
 
@@ -125,6 +143,7 @@ PROMPT="$(cat "$RETRO_DIR/prompt.md")
 ---
 Run details (added by run.sh):
 - Date: $TODAY
+- Lookback: the last $RETRO_DAYS day(s), transcripts with an event since $CUTOFF UTC
 - Transcript list: $SESSIONS_FILE
 - Write the report to: $REPORT"
 
@@ -162,9 +181,9 @@ FINDINGS="$(sed -n '1s/.*findings=\([0-9]*\).*/\1/p' "$REPORT")"
 PRS="$(sed -n '1s/.*prs=\([0-9]*\).*/\1/p' "$REPORT")"
 
 if [ "${FINDINGS:-0}" -gt 0 ]; then
-	notify "${FINDINGS} finding(s), ${PRS:-0} draft PR(s). Report: reports/$TODAY.md"
+	notify "${FINDINGS} finding(s), ${PRS:-0} draft PR(s). Report: reports/$(basename "$REPORT")"
 else
-	notify "Quiet day, no findings. Report: reports/$TODAY.md"
+	notify "Quiet day, no findings. Report: reports/$(basename "$REPORT")"
 fi
 
 echo "[$(date '+%F %T')] retro done: findings=${FINDINGS:-?} prs=${PRS:-?}"
