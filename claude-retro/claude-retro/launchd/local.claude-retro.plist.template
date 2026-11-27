@@ -5,10 +5,10 @@
 	<key>Label</key>
 	<string>local.claude-retro</string>
 
+	<!-- A dedicated launcher (built by install.sh) so Full Disk Access can be granted to this job alone, not to /bin/bash. -->
 	<key>ProgramArguments</key>
 	<array>
-		<string>/bin/bash</string>
-		<string>@HOME@/claude-retro/run.sh</string>
+		<string>@HOME@/Library/Application Support/claude-retro/claude-retro-launcher</string>
 	</array>
 
 	<key>WorkingDirectory</key>

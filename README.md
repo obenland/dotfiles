@@ -40,6 +40,7 @@ Stowing installs the code and config into `~/claude-retro/`. `install.sh` schedu
 - Runtime data stays on each machine and out of git: `reports/`, `work/`, `worktrees/`, `logs/`.
 - Each machine reviews only its own sessions and writes its own report. If two machines propose the same repo fix the same night, the second push or draft PR fails harmlessly (no force push), and its diff stays in that machine's report.
 - To keep a machine from running it: `touch ~/claude-retro/disabled && ~/claude-retro/install.sh`. That removes the schedule there, and later pulls leave it off. Delete the file and re-run `install.sh` to turn it back on.
+- On macOS, launchd starts a small launcher (`~/Library/Application Support/claude-retro/claude-retro-launcher`, built by `install.sh` from `launcher/`) instead of `/bin/bash`. Grant that one binary Full Disk Access so the run can read repos in `~/Documents`; `install.sh` opens the pane when it builds it. It's rebuilt only when its source changes, since a rebuild drops the grant.
 - For unattended auth, run `claude setup-token`, then store the token: `security add-generic-password -U -s claude-retro-oauth-token -a "$(id -un)" -w`. Without it, the job uses the regular sign-in.
 
 ### Zsh file loading order

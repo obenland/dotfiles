@@ -104,18 +104,13 @@ hooks_safe() {
 		value="${value/#\~\//$HOME/}"
 		[[ "$value" == /* ]] || return 1
 	fi
-	# A core.fsmonitor command (anything but a boolean) can also resolve inside the worktree, and runs on add.
+	# git runs a non-boolean core.fsmonitor as a shell command (on add, status and more), which could name a
+	# worktree file however it's written, so allow only unset or the built-in boolean daemon.
 	value="$(cd "$1" && git config --get core.fsmonitor 2>/dev/null)"
-	if [ -n "$value" ]; then
-		case "$value" in
-			true | false | yes | no | on | off | 1 | 0) ;;
-			*)
-				value="${value/#\~\//$HOME/}"
-				[[ "$value" == /* ]] || return 1
-				[[ "$value/" == "$RETRO"/* ]] && return 1
-				;;
-		esac
-	fi
+	case "$value" in
+		"" | true | false | yes | no | on | off | 1 | 0) ;;
+		*) return 1 ;;
+	esac
 	hooks_dir="$(cd "$1" && git rev-parse --path-format=absolute --git-path hooks 2>/dev/null)" || return 1
 	[ -n "$hooks_dir" ] || return 1
 	[[ "$hooks_dir/" == "$RETRO"/* ]] && return 1

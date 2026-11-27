@@ -27,6 +27,25 @@ mkdir -p "$RETRO_DIR/logs" "$RETRO_DIR/work" "$RETRO_DIR/reports" "$RETRO_DIR/wo
 
 case "$(uname -s)" in
 	Darwin)
+		# Build the launcher launchd starts, so Full Disk Access can be granted to it alone. It lives outside
+		# ~/claude-retro, where the headless run can't write. Rebuilding changes its signature and drops the
+		# grant, so only rebuild when the source changes.
+		launcher_dir="$HOME/Library/Application Support/claude-retro"
+		launcher="$launcher_dir/claude-retro-launcher"
+		src="$RETRO_DIR/launcher/claude-retro-launcher.c"
+		want="$(shasum -a 256 "$src" | cut -d' ' -f1)"
+		if [ ! -x "$launcher" ] || [ "$(cat "$launcher.sha256" 2>/dev/null)" != "$want" ]; then
+			mkdir -p "$launcher_dir"
+			cc -O2 -Wall -o "$launcher.tmp" "$src"
+			codesign --force --sign - --identifier local.claude-retro.launcher "$launcher.tmp"
+			mv -f "$launcher.tmp" "$launcher"
+			echo "$want" > "$launcher.sha256"
+			echo "Built $launcher." >&2
+			echo "Grant it Full Disk Access so the nightly run can read repos in ~/Documents:" >&2
+			echo "  System Settings > Privacy & Security > Full Disk Access > + > Cmd-Shift-G > $launcher" >&2
+			open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" 2>/dev/null || true
+		fi
+
 		plist="$HOME/Library/LaunchAgents/local.claude-retro.plist"
 		mkdir -p "$HOME/Library/LaunchAgents"
 		# Render a real file (not a symlink into dotfiles) with this machine's home and user.
