@@ -63,7 +63,15 @@ printf '[core]\n\thooksPath = .githooks\n' > "$C/inchooks.extra"
 git -C "$C/inchooks" config include.path "$C/inchooks.extra"
 git -C "$C/inchooks" worktree add -q -b claude-retro/i "$W/inchooks" trunk
 
-TRUSTED="$(printf '%s\n' "$C/wporg" "$C/own" "$C/relhooks" "$C/withhook" "$C/inchooks")"
+# A checkout with a relative core.fsmonitor command, which git add would run from the worktree.
+git init -q -b trunk "$C/fsmon"
+git -C "$C/fsmon" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$C/fsmon" remote add origin git@github.com:WordPress/fsmon.git
+git -C "$C/fsmon" remote add fork git@github.com:obenland/fsmon.git
+git -C "$C/fsmon" worktree add -q -b claude-retro/f "$W/fsmon" trunk
+git -C "$C/fsmon" config core.fsmonitor scripts/fsmonitor.sh
+
+TRUSTED="$(printf '%s\n' "$C/wporg" "$C/own" "$C/relhooks" "$C/withhook" "$C/inchooks" "$C/fsmon")"
 
 # Forged: a plain repo inside worktrees/, with a config the agent could have written.
 git init -q "$W/fake"
@@ -124,12 +132,12 @@ t 2 "$C/untrusted" "git fetch origin"
 t 2 "$C/untrusted" "git worktree add -b claude-retro/n $W/untrusted-1 origin/trunk"
 
 # Relative core.hooksPath blocks commit and push, not add.
-t 0 "$W/relhooks" "git add AGENTS.md"
+t 2 "$W/relhooks" "git add AGENTS.md"
 t 2 "$W/relhooks" "git commit -F $R/work/msg.txt"
 t 2 "$W/relhooks" "git push -u fork claude-retro/h"
 t 2 "$W/withhook" "git commit -F $R/work/msg.txt"
 t 2 "$W/withhook" "git push -u fork claude-retro/k"
-t 0 "$W/withhook" "git add AGENTS.md"
+t 2 "$W/withhook" "git add AGENTS.md"
 t 2 "$W/withhook" "git checkout -b claude-retro/k2"
 t 2 "$W/relhooks" "git checkout -b claude-retro/h2"
 t 2 "$C/withhook" "git worktree add -b claude-retro/k3 $W/withhook-2 trunk"
@@ -138,6 +146,8 @@ t 2 "$W/inchooks" "git commit -F $R/work/msg.txt"
 t 2 "$W/inchooks" "git checkout -b claude-retro/i2"
 t 2 "$C/inchooks" "git worktree add -b claude-retro/i3 $W/inchooks-2 trunk"
 t 0 "$C/withhook" "git fetch origin"
+t 2 "$W/fsmon" "git add AGENTS.md"
+t 2 "$W/withhook" "git fetch fork"
 
 # fetch.
 t 0 "$C/wporg" "git fetch origin"
