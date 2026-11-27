@@ -24,14 +24,25 @@
 		<string>@USER@</string>
 	</dict>
 
-	<!-- 11:17 pm local time (America/Chicago). Runs on wake if the Mac was asleep at that time. -->
+	<!-- Nightly at the time in config/schedule; launchd fires a missed one on wake. -->
 	<key>StartCalendarInterval</key>
 	<dict>
 		<key>Hour</key>
-		<integer>23</integer>
+		<integer>@HOUR@</integer>
 		<key>Minute</key>
-		<integer>17</integer>
+		<integer>@MINUTE@</integer>
 	</dict>
+
+	<!-- run.sh exits non-zero when a run failed or is waiting for a full wake or the network; launchd then
+	     starts it again 30 minutes later, until a run exits 0. This also runs it once at load (login, or
+	     install.sh after a pull); run.sh exits 0 at once unless last night's run is still unfinished. -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>1800</integer>
 
 	<key>StandardOutPath</key>
 	<string>@HOME@/claude-retro/logs/retro.out.log</string>

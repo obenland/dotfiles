@@ -1,0 +1,4 @@
+# When the nightly retro runs, in local time; sourced by run.sh and install.sh. If that run fails, or
+# the Mac isn't fully awake with network, it's tried again every 30 minutes until one succeeds.
+RETRO_HOUR=23
+RETRO_MINUTE=17

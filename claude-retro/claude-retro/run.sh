@@ -17,8 +17,10 @@ export USER="${USER:-$(id -un)}"
 CLAUDE_BIN="$HOME/.local/bin/claude"
 RETRO_DIR="$HOME/claude-retro"
 PROJECTS_DIR="$HOME/.claude/projects"
-TODAY="$(date +%F)"
 RUN_STARTED="$(date -u '+%Y-%m-%dT%H:%M:%S')"
+
+# shellcheck source=config/schedule
+. "$RETRO_DIR/config/schedule"
 
 # The nightly window starts at the last successful run, so a missed or failed night isn't lost; it's
 # recorded only after a clean run, where the headless agent can't write. A first run, or a gap longer
@@ -36,6 +38,53 @@ MAX_DAYS=14
 MANUAL_DAYS="${RETRO_DAYS:-}"
 [ -z "$MANUAL_DAYS" ] || [[ "$MANUAL_DAYS" =~ ^[1-9][0-9]?$ ]] || { echo "RETRO_DAYS must be a whole number from 1 to 99" >&2; exit 1; }
 SUFFIX="${MANUAL_DAYS:+-${MANUAL_DAYS}d}"
+
+# The nightly slot is the night of the latest RETRO_HOUR:RETRO_MINUTE that has passed, named by its date.
+# A run starts only while that slot is unfinished; a late one (the Mac slept through) keeps the slot's date.
+# Exit codes drive the retries: launchd starts the job again 30 minutes after a non-zero exit (a failure,
+# or EX_TEMPFAIL while waiting), and not after 0. cron fires every 30 minutes and relies on the slot check.
+EX_TEMPFAIL=75
+if [ "$(date +%H%M)" \< "$(printf '%02d%02d' "$RETRO_HOUR" "$RETRO_MINUTE")" ]; then
+	SLOT="$(date -v-1d +%F 2>/dev/null || date -d yesterday +%F)"
+else
+	SLOT="$(date +%F)"
+fi
+SLOT_FILE="$STATE_DIR/last-slot"
+ATTEMPTS_FILE="$STATE_DIR/attempts"
+MAX_ATTEMPTS=3
+ATTEMPT=""
+
+if [ -n "$MANUAL_DAYS" ]; then
+	TODAY="$(date +%F)"
+else
+	TODAY="$SLOT"
+	# `RETRO_FORCE=1 ~/claude-retro/run.sh` runs now, whatever the slot and power state.
+	if [ -z "${RETRO_FORCE:-}" ]; then
+		[[ "$(cat "$SLOT_FILE" 2>/dev/null || true)" < "$SLOT" ]] || exit 0
+		read -r tried_slot tried 2>/dev/null < "$ATTEMPTS_FILE" || true
+		[ "${tried_slot:-}" = "$SLOT" ] || tried=0
+		[ "${tried:-0}" -lt "$MAX_ATTEMPTS" ] || exit 0
+		# launchd also fires during a dark wake, the few seconds a sleeping Mac wakes for upkeep, where the
+		# network is usually down and the run is frozen again mid-call. Wait for a full wake (one with graphics).
+		if command -v pmset >/dev/null 2>&1 && ! pmset -g systemstate 2>/dev/null | grep -q 'Capabilities are:.*Graphics'; then
+			echo "[$(date '+%F %T')] slot $SLOT due; waiting for a full wake"
+			exit "$EX_TEMPFAIL"
+		fi
+		# Any HTTP response will do; only a failure to connect means no network.
+		if ! curl -sS -o /dev/null --max-time 15 https://api.anthropic.com/ 2>/dev/null; then
+			echo "[$(date '+%F %T')] slot $SLOT due; waiting for the network"
+			exit "$EX_TEMPFAIL"
+		fi
+		ATTEMPT=$(( ${tried:-0} + 1 ))
+		mkdir -p "$STATE_DIR"
+		printf '%s %s\n' "$SLOT" "$ATTEMPT" > "$ATTEMPTS_FILE"
+	fi
+fi
+
+# Keep the Mac from idling to sleep mid-run; closing the lid on battery still sleeps it.
+if command -v caffeinate >/dev/null 2>&1; then
+	caffeinate -i -w $$ >/dev/null 2>&1 &
+fi
 SESSIONS_FILE="$RETRO_DIR/work/sessions-$TODAY$SUFFIX.txt"
 DIGEST_FILE="$RETRO_DIR/work/digest-$TODAY$SUFFIX.jsonl"
 HISTORY_FILE="$RETRO_DIR/work/history-$TODAY$SUFFIX.txt"
@@ -57,7 +106,18 @@ notify() {
 	fi
 }
 
-trap 'notify "Retro run failed. See ~/claude-retro/logs/."' ERR
+# Says whether a failed scheduled run gets another try.
+failed() {
+	if [ -z "$ATTEMPT" ]; then
+		notify "Retro run failed. See ~/claude-retro/logs/."
+	elif [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; then
+		notify "Retro run failed (try $ATTEMPT of $MAX_ATTEMPTS); retrying in 30 minutes. See ~/claude-retro/logs/."
+	else
+		notify "Retro run failed $MAX_ATTEMPTS times; next try tomorrow night. See ~/claude-retro/logs/."
+	fi
+}
+
+trap failed ERR
 
 mkdir -p "$RETRO_DIR/work" "$RETRO_DIR/reports" "$RETRO_DIR/worktrees" "$RETRO_DIR/logs"
 
@@ -133,6 +193,14 @@ record_run() {
 	printf '%s\n' "$RUN_STARTED" > "$LAST_RUN_FILE"
 }
 
+# Marks tonight's slot done, so the half-hourly schedule stops starting runs until the next one. Also
+# after a run with unreadable transcripts: its window doesn't advance, and the next night looks again.
+finish_slot() {
+	[ -z "$MANUAL_DAYS" ] || return 0
+	mkdir -p "$STATE_DIR"
+	printf '%s\n' "$SLOT" > "$SLOT_FILE"
+}
+
 # Claude Code rewrites bookkeeping lines into old transcripts, so mtime alone lists stale sessions.
 # mtime only narrows the search; keep transcripts whose newest event timestamp (ISO 8601 UTC) is in the window.
 MTIME_DAYS=$(( ($(date -u +%s) - $(epoch "$CUTOFF")) / 86400 + 2 ))
@@ -146,6 +214,7 @@ find "$PROJECTS_DIR" -path "$SELF_PROJECT" -prune -o -name '*.jsonl' -mtime -"$M
 if [ ! -s "$SESSIONS_FILE" ]; then
 	echo "No sessions in the window."
 	record_run
+	finish_slot
 	exit 0
 fi
 
@@ -316,5 +385,6 @@ else
 fi
 
 [ -n "$UNREADABLE" ] || record_run
+finish_slot
 
 echo "[$(date '+%F %T')] retro done: findings=${FINDINGS:-?} prs=${PRS:-?}"

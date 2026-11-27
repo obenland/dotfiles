@@ -34,7 +34,9 @@ stow git zsh
 
 ### claude-retro
 
-Stowing installs the code and config into `~/claude-retro/`. `install.sh` schedules it: a LaunchAgent at 11:17 pm (macOS) or a crontab entry (Linux). Run it once on a new machine; after that the `post-merge` hook re-runs it on every pull, so schedule changes propagate.
+Stowing installs the code and config into `~/claude-retro/`. `install.sh` schedules it: a LaunchAgent (macOS) or a crontab entry (Linux). Run it once on a new machine; after that the `post-merge` hook re-runs it on every pull, so schedule changes propagate.
+
+- The nightly run is at 11:17 pm (`config/schedule`). If it fails, or the Mac isn't fully awake (a dark wake) or can't reach the API, `run.sh` exits non-zero and launchd tries again every 30 minutes until a run succeeds; then nothing fires until the next 11:17 pm. A night slept through runs at the next real wake, under that night's date. A failing run gets three tries per night. On Linux, cron fires every 30 minutes and `run.sh` exits at once unless the night's run is unfinished. `RETRO_FORCE=1 ~/claude-retro/run.sh` runs now regardless; tests: `bin/test-schedule.sh`.
 
 - `~/claude-retro` must be a real directory before stowing, so stow links its files instead of folding the whole directory into this repo. The `post-merge` hook creates it.
 - Runtime data stays on each machine and out of git: `reports/`, `work/`, `worktrees/`, `logs/`.

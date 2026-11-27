@@ -25,6 +25,11 @@ fi
 chmod +x "$RETRO_DIR/run.sh" "$RETRO_DIR/bin/apply-proposals.sh" "$RETRO_DIR/bin/repo-remotes.sh"
 mkdir -p "$RETRO_DIR/logs" "$RETRO_DIR/work" "$RETRO_DIR/reports" "$RETRO_DIR/worktrees"
 
+# shellcheck source=config/schedule
+. "$RETRO_DIR/config/schedule"
+HOUR=$((10#$RETRO_HOUR))
+MINUTE=$((10#$RETRO_MINUTE))
+
 case "$(uname -s)" in
 	Darwin)
 		# Build the launcher launchd starts, so Full Disk Access can be granted to it alone. It lives outside
@@ -50,6 +55,7 @@ case "$(uname -s)" in
 		mkdir -p "$HOME/Library/LaunchAgents"
 		# Render a real file (not a symlink into dotfiles) with this machine's home and user.
 		sed -e "s#@HOME@#$HOME#g" -e "s#@USER@#$(id -un)#g" \
+			-e "s#@HOUR@#$HOUR#g" -e "s#@MINUTE@#$MINUTE#g" \
 			"$RETRO_DIR/launchd/local.claude-retro.plist.template" > "$plist"
 		plutil -lint "$plist"
 		launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true
@@ -57,7 +63,9 @@ case "$(uname -s)" in
 		launchctl list | grep retro
 		;;
 	Linux)
-		line="17 23 * * * PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin /bin/bash $RETRO_DIR/run.sh >> $RETRO_DIR/logs/retro.out.log 2>> $RETRO_DIR/logs/retro.err.log"
+		# cron can't relaunch on failure, so it fires every 30 minutes from the nightly time, and run.sh
+		# exits at once unless last night's run is unfinished. TZ too, so run.sh dates the slot in cron's zone.
+		line="$MINUTE,$(( (MINUTE + 30) % 60 )) * * * * TZ=America/Chicago PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin /bin/bash $RETRO_DIR/run.sh >> $RETRO_DIR/logs/retro.out.log 2>> $RETRO_DIR/logs/retro.err.log"
 		{
 			crontab -l 2>/dev/null | grep -v 'claude-retro' || true
 			echo "CRON_TZ=America/Chicago # claude-retro"
