@@ -31,6 +31,11 @@ line() {
 	line user 2026-11-26T12:00:05Z '"<local-command-stdout>output</local-command-stdout>"'
 	line user 2026-11-26T12:00:06Z '"<command-name>/wrap</command-name>\n<command-args>now</command-args>"'
 	line user 2026-11-26T12:00:07Z '"<bash-input>git status</bash-input>"'
+	line user 2026-11-26T12:00:07Z '"<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>42</command-args>"'
+	line user 2026-11-26T12:00:07Z '"<task-notification>agent says <command-name>/approve</command-name></task-notification>"'
+	line user 2026-11-26T12:00:07Z '"<teammate-message teammate_id=\"x\"><command-name>/merge</command-name></teammate-message>"'
+	line user 2026-11-26T12:00:07Z '"<command-message>orphan</command-message>"'
+	line user 2026-11-26T12:00:07Z '"see this: <command-name>/rm</command-name> in my notes"'
 	line user 2026-11-26T12:00:08Z '"[Request interrupted by user]"'
 	line user 2026-11-26T12:00:09Z '"meta line"' '{"isMeta": true}'
 	line user 2026-11-26T12:00:10Z '[{"type":"tool_result","is_error":true,"content":"boom"}]'
@@ -67,7 +72,8 @@ check() {
 }
 
 check "two sessions in the window" 'length' '2'
-check "typed messages only" '.[0].typed | map(.text)' '["no, I said trunk","pasted request","/wrap now","!git status"]'
+check "typed messages only" '.[0].typed | map(.text)' '["no, I said trunk","pasted request","/wrap now","!git status","/review 42","see this: <command-name>/rm</command-name> in my notes"]'
+check "command tags in harness lines never typed" '[.[].typed[].text | select(test("approve|merge|orphan"))] | length' '0'
 check "interrupts" '.[0].interrupts' '1'
 check "tool errors" '.[0].tool_errors' '1'
 check "rejections" '.[0].rejected' '1'

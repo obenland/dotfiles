@@ -29,8 +29,11 @@ MAX_TEXT = 400
 MAX_TYPED = 80
 
 # String "user" lines the harness injects, which the user never typed.
-HARNESS = re.compile(r'^\s*<(teammate-message|task-notification|local-command-[\w-]+|system-reminder|bash-stdout|bash-stderr|command-message)\b')
-COMMAND = re.compile(r'<command-name>\s*(.*?)\s*</command-name>(?:.*?<command-args>(.*?)</command-args>)?', re.S)
+HARNESS = re.compile(r'^\s*<(teammate-message|task-notification|local-command-[\w-]+|system-reminder|bash-stdout|bash-stderr)\b')
+# A slash command the user typed: the line starts with it (after an optional <command-message>), so command
+# tags quoted inside harness lines, teammate messages or pasted text never count as typed.
+COMMAND = re.compile(r'^\s*(?:<command-message>.*?</command-message>\s*)?<command-name>\s*(.*?)\s*</command-name>'
+	r'(?:\s*<command-args>(.*?)</command-args>)?', re.S)
 BASH_INPUT = re.compile(r'^\s*<bash-input>(.*?)</bash-input>', re.S)
 REMINDER = re.compile(r'<system-reminder>.*?</system-reminder>', re.S)
 INTERRUPT = '[Request interrupted by user'
@@ -56,14 +59,16 @@ def typed_text(content):
 	content = REMINDER.sub('', content).strip()
 	if not content or content.startswith(INTERRUPT):
 		return None
-	m = COMMAND.search(content)
+	if HARNESS.match(content):
+		return None
+	m = COMMAND.match(content)
 	if m:
 		return clip(f'{m.group(1)} {m.group(2) or ""}')
+	if content.startswith('<command-message>'):
+		return None
 	m = BASH_INPUT.match(content)
 	if m:
 		return clip('!' + m.group(1))
-	if HARNESS.match(content):
-		return None
 	return clip(content)
 
 
