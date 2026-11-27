@@ -1,6 +1,7 @@
 Be direct. Move forward. Don't over-explain.
 Bias toward action — ask only when the decision is genuinely ambiguous.
 Review ~/.claude/settings.json for global settings.
+`~/.claude/CLAUDE.md`, `settings.json`, hooks and skills are symlinks into `~/dotfiles/claude/.claude/`. Edit the dotfiles paths directly. That repo commits straight to `trunk`, and `claude/.claude/skills/synced/` is gitignored.
 
 ## Version Control
 
