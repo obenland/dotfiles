@@ -222,6 +222,10 @@ t 2 "$W/wporg" "gh pr create --draft --repo WordPress/wordpress.org --base trunk
 t 2 "$W/wporg" "gh pr create --draft --repo WordPress/wordpress.org --base trunk --head obenland:claude-retro/x --title \"\$(id)\" --body-file $R/work/body.md"
 t 2 "$W/wporg" "$PR --body-file $R/work/body.md; rm -rf /"
 t 0 "$W/wporg" "gh pr list --repo WordPress/wordpress.org --author @me"
+t 0 "$C/wporg" "gh pr list --repo WordPress/wordpress.org --author @me"
+t 2 "$W/fake" "gh pr list --repo WordPress/wordpress.org --author @me"
+t 2 "$R" "gh repo view WordPress/wordpress.org"
+t 2 "$C/untrusted" "gh repo view someone/untrusted"
 t 2 "$W/wporg" "gh repo view --web"
 
 echo "$PASS passed, $FAIL failed"

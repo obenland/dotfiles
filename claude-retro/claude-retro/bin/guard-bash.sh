@@ -265,6 +265,9 @@ fi
 
 if [[ "$CMD" =~ ^gh[[:space:]] ]]; then
 	[[ "$CMD" =~ ^gh\ (pr\ create|pr\ list|repo\ view)(\ |$) ]] || block "only gh pr create, gh pr list and gh repo view are allowed."
+	# gh runs git in the cwd to detect the repo, so it needs the same trusted place as git.
+	is_user_checkout "$CWD" || is_retro_worktree "$CWD" \
+		|| block "gh runs only at the root of one of the user's checkouts or of a retro worktree (current dir: $CWD)."
 	[[ "$CMD" == *"--web"* || "$CMD" =~ (^|\ )-w(\ |$) ]] && block "no --web."
 fi
 
